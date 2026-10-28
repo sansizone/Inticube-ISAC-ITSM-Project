@@ -26,7 +26,7 @@ variables:
   DEPLOY_HOST: "10.1.17.116"
   DEPLOY_USER: "isacstat"
   DEPLOY_DIR: "/app/isac/isac-project"
-  APP_PORT: "18080"
+  APP_PORT: "30000"
   MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository"
   GIT_DEPTH: "20"
 
@@ -97,7 +97,7 @@ build:
     - $SSH "chmod +x ${DEPLOY_DIR}/server-restart.sh ${DEPLOY_DIR}/start.sh && APP_PORT=${APP_PORT} ${DEPLOY_DIR}/server-restart.sh ${DEPLOY_DIR}"
   environment:
     name: dev
-    url: http://10.1.17.116:18080
+    url: http://10.1.17.116:30000
 
 # dev 브랜치: 머지/푸시되면 자동 배포
 deploy_dev:
