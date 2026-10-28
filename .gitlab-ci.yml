@@ -1,0 +1,99 @@
+# 인티큐브 ISAC-PROJECT — GitLab CI/CD
+#
+# 파이프라인: build(프론트 + jar) → deploy(10.1.17.116 에 jar 복사 후 재시작)
+# Runner: shell executor (JDK 17, Node 20, Maven, ssh/scp 설치 필요)
+#
+# GitLab › Settings › CI/CD › Variables 에 등록할 값 (모두 Masked, Protected 권장)
+#   DEPLOY_SSH_KEY   : 배포 서버에 접속할 개인키 (type: File). 서버 ~/.ssh/authorized_keys 에 공개키 등록
+#   DEPLOY_USER      : 배포 서버 로그인 계정 (예: isac)
+#   DEPLOY_HOST      : 배포 서버 (기본 10.1.17.116)
+#   DEPLOY_DIR       : 서버의 설치 경로 (기본 /app/isac/isac-project — dist 구조 그대로, DEPLOY_USER 에게 쓰기 권한 필요)
+#
+# 브랜치 정책
+#   dev    → 머지(푸시) 시 자동 빌드 + 10.1.17.116 자동 배포
+#   그 외  → 빌드만 (배포는 파이프라인 화면의 ▶ 수동 버튼)
+
+stages:
+  - build
+  - deploy
+
+variables:
+  DEPLOY_HOST: "10.1.17.116"
+  DEPLOY_DIR: "/app/isac/isac-project"
+  APP_PORT: "18080"
+  MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository"
+  GIT_DEPTH: "20"
+
+# 의존성 캐시 (Runner 머신에 보관) — 같은 브랜치에서는 npm ci / mvn 다운로드를 건너뜀
+cache:
+  key:
+    files:
+      - frontend/package-lock.json
+      - backend/pom.xml
+  paths:
+    - frontend/node_modules/
+    - .m2/repository/
+
+# ---------------------------------------------------------------------------
+# 1. 빌드: 프론트(Vite) → backend/static → jar 패키징 (build.sh 와 같은 순서)
+# ---------------------------------------------------------------------------
+build:
+  stage: build
+  script:
+    - java -version && node -v && mvn -v | head -1
+    - cd frontend && npm ci && npm run build && cd ..
+    # 이전 빌드의 index-*.js/css 가 남지 않도록 clean 후 패키징 (스테이징 서버용 테스트는 건너뜀)
+    - cd backend && mvn -q clean package -DskipTests && cd ..
+    - mkdir -p dist/config
+    - cp backend/target/isac-project.jar dist/
+    - cp deploy/start.sh deploy/start.bat deploy/postgres-init.sql deploy/server-restart.sh dist/
+    - cp deploy/postgres-teamboard-schema.sql deploy/postgres-upgrade-*.sql dist/
+    - cp deploy/config/application.yml dist/config/application.yml.example
+    - ls -la dist/
+  artifacts:
+    name: "isac-project-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/
+    expire_in: 2 weeks
+
+# ---------------------------------------------------------------------------
+# 2. 배포: scp 로 jar·스크립트·SQL 복사 → 서버에서 server-restart.sh 실행 → 기동 확인
+#    서버의 config/application.yml, data/, logs/ 는 건드리지 않음
+# ---------------------------------------------------------------------------
+.deploy_template: &deploy
+  stage: deploy
+  needs: ["build"]
+  before_script:
+    - test -n "${DEPLOY_USER}" || { echo "DEPLOY_USER 변수가 없습니다"; exit 1; }
+    - test -f "${DEPLOY_SSH_KEY}" || { echo "DEPLOY_SSH_KEY(File 타입) 변수가 없습니다"; exit 1; }
+    - chmod 600 "${DEPLOY_SSH_KEY}"
+    - mkdir -p ~/.ssh && ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+    - export SSH="ssh -i ${DEPLOY_SSH_KEY} -o BatchMode=yes -o ConnectTimeout=15 ${DEPLOY_USER}@${DEPLOY_HOST}"
+    - export SCP="scp -i ${DEPLOY_SSH_KEY} -o BatchMode=yes"
+  script:
+    - echo "배포 대상 ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR} (${CI_COMMIT_REF_NAME} ${CI_COMMIT_SHORT_SHA})"
+    - $SSH "mkdir -p ${DEPLOY_DIR}/config ${DEPLOY_DIR}/data ${DEPLOY_DIR}/logs ${DEPLOY_DIR}/backup ${DEPLOY_DIR}/sql"
+    # 새 jar 는 .new 로 올린 뒤 서버 스크립트에서 교체 (복사 도중 기동되는 일 방지)
+    - $SCP dist/isac-project.jar "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/isac-project.jar.new"
+    - $SCP dist/server-restart.sh dist/start.sh "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/"
+    - $SCP dist/postgres-*.sql "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/sql/"
+    - $SCP dist/config/application.yml.example "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR}/config/"
+    # 재시작 + 기동 확인 (스크립트가 실패하면 이전 jar 로 되돌림)
+    - $SSH "chmod +x ${DEPLOY_DIR}/server-restart.sh ${DEPLOY_DIR}/start.sh && APP_PORT=${APP_PORT} ${DEPLOY_DIR}/server-restart.sh ${DEPLOY_DIR}"
+  environment:
+    name: dev
+    url: http://10.1.17.116:18080
+
+# dev 브랜치: 머지/푸시되면 자동 배포
+deploy_dev:
+  <<: *deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# 그 외 브랜치: 파이프라인 화면에서 ▶ 버튼으로 수동 배포
+deploy_manual:
+  <<: *deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH != "dev"
+      when: manual
+      allow_failure: true

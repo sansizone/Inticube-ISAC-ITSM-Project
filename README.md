@@ -354,3 +354,22 @@ PostgreSQL 16에서 로그인·권한·CSRF·보드/업무 CRUD·드래그 이�
 - 이메일/메신저 알림, 실시간 동시 편집(현재는 30초 주기 갱신)
 - 엑셀 가져오기/내보내기, 엑셀로 워크스페이스 만들기
 - 게시글 본문 이미지 붙여넣기(현재는 첨부파일로 업로드)
+
+## GitLab CI/CD 배포 (10.1.17.116)
+
+`.gitlab-ci.yml` 이 **build → deploy** 두 단계로 돌아갑니다. `dev` 브랜치에 머지(푸시)되면 자동 빌드·배포되고, 그 외 브랜치는 빌드만 한 뒤 파이프라인 화면의 ▶ 버튼으로 수동 배포할 수 있습니다. 배포는 jar 와 스크립트·SQL 만 올리고, 서버의 `config/application.yml`·`data/`·`logs/` 는 건드리지 않습니다.
+
+**1. Runner (shell executor) 준비** — Runner 머신에 JDK 17, Node 20, Maven, git, ssh/scp 가 있어야 합니다. 프로젝트 › Settings › CI/CD › Runners 에서 등록하고 `Run untagged jobs` 를 켜거나 job 에 tags 를 맞추세요.
+
+**2. 배포 서버(10.1.17.116) 준비** — 배포 계정(예: `isac`)으로 JDK 17 설치, `~/isac-project/` 에 `config/application.yml` (DB 접속 정보 — CI 로는 넘기지 않고 서버에만 둡니다) 을 만들어 둡니다. 처음 한 번은 `sql/postgres-teamboard-schema.sql` 로 테이블을 만들고, 이후 버전 업은 `sql/postgres-upgrade-<버전>.sql` 을 jar 교체 전에 실행합니다. CI 전용 SSH 키를 만들어 공개키를 `~/.ssh/authorized_keys` 에 넣습니다 (`ssh-keygen -t ed25519 -f isac-ci -N ""`).
+
+**3. GitLab 변수** (Settings › CI/CD › Variables, Masked + Protected)
+
+| 변수 | 값 |
+|---|---|
+| `DEPLOY_SSH_KEY` | 개인키 내용 (**Type: File**) |
+| `DEPLOY_USER` | 배포 계정 (예: `isac`) |
+| `DEPLOY_HOST` | `10.1.17.116` (기본값 있음) |
+| `DEPLOY_DIR` | 설치 경로 (기본 `/home/<DEPLOY_USER>/isac-project`) |
+
+**4. 서버에서 하는 일** — `server-restart.sh` 가 새 jar 를 `backup/` 에 이전 버전을 남기고 교체 → 기존 프로세스 종료 → `nohup java -jar` 기동 → 60초 안에 `http://127.0.0.1:8080/` 응답 확인. 응답이 없으면 이전 jar 로 자동 롤백하고 파이프라인을 실패로 표시합니다. 로그는 `logs/app.log`, pid 는 `isac-project.pid`. 수동 재시작도 같은 스크립트로: `./server-restart.sh ~/isac-project`.
