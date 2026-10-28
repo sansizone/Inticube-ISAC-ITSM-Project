@@ -5,6 +5,7 @@ import { BoardMark } from './Sidebar.jsx'
 import { Icon, StatusIcon } from './icons.jsx'
 import { columnsFor, distinctValues, splitPeople, TYPE_LABEL, COLUMN_TYPES, relIds, refLabel, builtinLabel } from './Fields.jsx'
 import { api } from '../api.js'
+import { RelationTarget } from './BoardSettings.jsx'
 import { slaOf, itemKey, blockedBy } from '../sla.js'
 
 export const EMPTY_FILTERS = { q: '', assignee: '', status: '', duty: '', groups: [], priority: '', due: '', fields: {}, type: '', version: '', sla: '', watch: '' }
@@ -19,8 +20,6 @@ export const SORTS = [
   { key: 'assignee', label: '담당자' },
   { key: 'updated', label: '최근 수정' },
   { key: 'id', label: '등록 순서(번호)' },
-  { key: 'type', label: '유형' },
-  { key: 'sla', label: 'SLA 남은 시간' },
   { key: 'progress', label: '진척률' },
   { key: 'version', label: '버전' },
 ]
@@ -37,7 +36,7 @@ const PRIORITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
 export const DUES = [['overdue', '지연됨'], ['today', '오늘 마감'], ['week', '이번 주 마감'], ['next7', '7일 이내 마감'], ['none', '마감일 없음']]
 
 export function isFiltering(f) {
-  return !!(f.q || f.assignee || f.status || f.duty || f.groups.length || f.priority || f.due || Object.keys(f.fields || {}).length || f.type || f.version || f.sla || f.watch)
+  return !!(f.q || f.assignee || f.status || f.groups.length || f.priority || f.due || Object.keys(f.fields || {}).length || f.version || f.watch)
 }
 
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -49,7 +48,7 @@ export function applyFilters(board, f, sort, { me, statusById, dutyIndex, watchi
   const slaState = (i) => { const s = slaOf(i, typeById[i.typeId], board); return s ? (s.done ? s.state : s.state === 'met' ? 'ok' : s.state) : 'none' }
   const fieldFilters = Object.entries(f.fields || {}).filter(([, vs]) => vs && vs.length)
   const colById = Object.fromEntries((board.columns || []).map((c) => [String(c.id), c]))
-  const dutyScope = f.duty && f.duty !== 'none' ? dutyIndex.descendants(Number(f.duty)) : null
+  const dutyScope = null // 담당업무는 화면에서 제거됨 — 예전에 저장된 보기의 담당업무 필터는 무시
   const now = new Date()
   const today = ymd(now)
   const in7 = ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7))
@@ -59,13 +58,12 @@ export function applyFilters(board, f, sort, { me, statusById, dutyIndex, watchi
   const out = board.items.filter((i) => {
     if (i.parentId) return false
     if (groupSet && !groupSet.has(i.groupId)) return false
-    if (f.duty === 'none' && i.dutyId != null) return false
     if (dutyScope && !dutyScope.has(i.dutyId)) return false
-    if (f.type === 'none' ? i.typeId != null : f.type && i.typeId !== Number(f.type)) return false
+    // 유형 필터는 화면에서 제거됨 — 예전에 저장된 보기의 유형 값은 무시
     if (f.version === 'none' ? i.versionId != null : f.version && i.versionId !== Number(f.version)) return false
     if (f.watch === 'me' && !(watching && watching.has(i.id))) return false
     if (f.watch === 'blocked' && blockedBy(i, board, statusById).length === 0) return false
-    if (f.sla) {
+    if (false) { // SLA 는 화면에서 제거됨 — 예전에 저장된 보기의 SLA 필터는 무시
       const st = slaState(i)
       if (f.sla === 'open' ? !['ok', 'warn'].includes(st) : f.sla === 'met' ? st !== 'met' : st !== f.sla) return false
     }
@@ -275,7 +273,7 @@ export const DueFilter = (p) => <SimpleFilter icon="calendar" label="마감일" 
 export function SortMenu({ sort, onChange, board }) {
   const pop = usePopover()
   const colSorts = board ? columnsFor(board, 'ITEM').filter((c) => c.type !== 'LONG_TEXT').map((c) => ({ key: `c:${c.id}`, label: c.name })) : []
-  const BL = ['status', 'assignee', 'due', 'start', 'priority', 'created', 'type', 'version', 'progress']
+  const BL = ['name', 'status', 'assignee', 'due', 'start', 'priority', 'created', 'type', 'version', 'progress']
   const all = [...SORTS, { key: 'created', label: '등록일' }, ...colSorts].map((s) => (board && BL.includes(s.key) ? { ...s, label: builtinLabel(board, s.key) } : s))
   const cur = all.find((s) => s.key === sort.key) || SORTS[0]
   const on = sort.key !== 'manual'
@@ -472,7 +470,7 @@ const HEADER_SORT = { name: 'name', key: 'id', status: 'status', assignee: 'assi
 const HEADER_FILTER = { status: 'status', assignee: 'assignee', due: 'due', priority: 'priority', type: 'type', version: 'version', sla: 'sla', duty: 'duty', group: 'groups' }
 
 /**
- * 표 컬럼 헤더 메뉴: 오름/내림차순 정렬, 이 컬럼으로 거르기, 컬럼 숨기기.
+ * 표 컬럼 헤더 메뉴: 오름/내림차순 정렬, 컬럼 필터, 컬럼 숨기기.
  * colKey: 'name' | 'key' | 기본 컬럼 키 | 'c:<id>'
  */
 export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, onFilter, onHide, onSettings, onAddRight, users, me, statusById }) {
@@ -523,8 +521,8 @@ export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, o
               </>}
               {filterKey && <>
                 {sortKey && <div className="menu-sep" />}
-                <button className="menu-row" onClick={() => setMode('filter')}><Icon name="filter" size={14} /> <span className="grow">이 컬럼으로 거르기</span><Icon name="chevronRight" size={13} /></button>
-                {filtered && <button className="menu-row" onClick={() => { if (filterKey === 'fields') setField([]); else onFilter(clearOne(filters, filterKey)); pop.close() }}><Icon name="x" size={14} /> 이 컬럼 필터 해제</button>}
+                <button className="menu-row" onClick={() => setMode('filter')}><Icon name="filter" size={14} /> <span className="grow">컬럼 필터</span><Icon name="chevronRight" size={13} /></button>
+                {filtered && <button className="menu-row" onClick={() => { if (filterKey === 'fields') setField([]); else onFilter(clearOne(filters, filterKey)); pop.close() }}><Icon name="x" size={14} /> 컬럼 필터 해제</button>}
               </>}
               {(onHide || onSettings || onAddRight) && <div className="menu-sep" />}
               {onAddRight && <button className="menu-row" onClick={() => setMode('add')}><Icon name="plus" size={14} /> <span className="grow">오른쪽에 컬럼 추가</span><Icon name="chevronRight" size={13} /></button>}
@@ -586,14 +584,16 @@ export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, o
 export function AddColumnForm({ board, onDone, onSettings }) {
   const [name, setName] = useState('')
   const [type, setType] = useState('TEXT')
+  const [ref, setRef] = useState({ refBoardId: null, refColumnId: null })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const submit = async (e) => {
     e.preventDefault()
     if (!name.trim()) return
+    if (type === 'RELATION' && !ref.refBoardId) { setErr('연결할 워크스페이스를 선택하세요.'); return }
     setBusy(true); setErr(null)
     try {
-      const c = await api.post(`/api/boards/${board.id}/columns`, { name: name.trim(), type, scope: 'ITEM', visible: type !== 'LONG_TEXT' })
+      const c = await api.post(`/api/boards/${board.id}/columns`, { name: name.trim(), type, scope: 'ITEM', visible: type !== 'LONG_TEXT', ...(type === 'RELATION' ? ref : {}) })
       setName(''); await onDone?.(c)
     } catch (x) { setErr(x.message) } finally { setBusy(false) }
   }
@@ -601,11 +601,12 @@ export function AddColumnForm({ board, onDone, onSettings }) {
     <form className="col-add-pop" onSubmit={submit}>
       <input className="input input-sm" autoFocus placeholder="컬럼 이름 (예: 고객사코드)" value={name} maxLength={100} onChange={(e) => setName(e.target.value)} />
       <select className="input input-sm" value={type} onChange={(e) => setType(e.target.value)}>
-        {COLUMN_TYPES.filter(([k]) => k !== 'RELATION').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        {COLUMN_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
       </select>
+      {type === 'RELATION' && <div className="col-add-rel"><RelationTarget board={board} refBoardId={ref.refBoardId} refColumnId={ref.refColumnId} onChange={(rb, rc) => setRef({ refBoardId: rb, refColumnId: rc })} /></div>}
       {err && <div className="form-error">{err}</div>}
       <div className="col-add-actions">
-        {onSettings && <button type="button" className="link" onClick={onSettings}>연결 컬럼·상세 설정…</button>}
+        {onSettings && <button type="button" className="link" onClick={onSettings}>컬럼 상세 설정…</button>}
         <span className="grow" />
         <button className="btn btn-sm btn-primary" disabled={!name.trim() || busy}>추가</button>
       </div>
@@ -620,7 +621,7 @@ export function AddColumnButton({ board, onAdded, onSettings }) {
     <>
       <button type="button" className="icon-btn icon-btn-sm th-add-btn" onClick={pop.open} title="컬럼 추가" aria-label="컬럼 추가"><Icon name="plus" size={14} /></button>
       {pop.anchor && (
-        <Popover anchor={pop.anchor} onClose={pop.close} width={280} align="right">
+        <Popover anchor={pop.anchor} onClose={pop.close} width={320} align="right">
           <div className="menu">
             <div className="menu-title">컬럼 추가</div>
             <AddColumnForm board={board} onDone={async (c) => { pop.close(); await onAdded?.(c) }} onSettings={onSettings ? () => { pop.close(); onSettings() } : null} />

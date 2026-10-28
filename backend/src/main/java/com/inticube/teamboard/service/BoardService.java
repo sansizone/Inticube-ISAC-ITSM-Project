@@ -87,7 +87,7 @@ public class BoardService {
                     String role = myRoles.get(b.getId());
                     if (role == null && b.getOwner().getId().equals(me.id())) role = "OWNER";
                     return new BoardSummary(b.getId(), b.getName(), b.getDescription(), b.getOwner().getName(), total, done,
-                            b.isPublic(), memberCount.getOrDefault(b.getId(), 0L), role, favs.contains(b.getId()));
+                            b.isPublic(), memberCount.getOrDefault(b.getId(), 0L), role, favs.contains(b.getId()), isShowProgress(b));
                 }).toList();
     }
 
@@ -120,7 +120,13 @@ public class BoardService {
         insertMember(b.getId(), me.id(), "OWNER");
         insertDefaultTypes(b);
         insertDefaultViews(b.getId());
-        return new BoardSummary(b.getId(), b.getName(), b.getDescription(), me.name(), 0, 0, b.isPublic(), 1, "OWNER", false);
+        return new BoardSummary(b.getId(), b.getName(), b.getDescription(), me.name(), 0, 0, b.isPublic(), 1, "OWNER", false, true);
+    }
+
+    /** 진행률 표시 여부: 컬럼 설정 JSON 에 "showProgress": false 가 있으면 끔 (기본 표시) */
+    private static final java.util.regex.Pattern NO_PROGRESS = java.util.regex.Pattern.compile("\"showProgress\"\\s*:\\s*false");
+    static boolean isShowProgress(Board b) {
+        return b.getColumnConfig() == null || !NO_PROGRESS.matcher(b.getColumnConfig()).find();
     }
 
     /** 이름에서 키 접두어 추천: 영문·숫자만 추려 대문자 6자, 없으면 TB+번호 */

@@ -44,6 +44,13 @@ public class ItemController {
         return itemService.insertUpdate(id, req.content(), req.parentId(), me);
     }
 
+    /** 댓글 수정 (본인만) */
+    @PutMapping("/updates/{id}")
+    public UpdateDto editUpdate(@PathVariable Long id, @Valid @RequestBody UpdateRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        guard.getUpdateChecked(id);
+        return itemService.updateUpdate(id, req.content(), me);
+    }
+
     @DeleteMapping("/updates/{id}")
     public void deleteUpdate(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) { guard.getUpdateChecked(id); itemService.deleteUpdate(id, me); }
 

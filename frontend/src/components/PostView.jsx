@@ -3,7 +3,7 @@ import { api } from '../api.js'
 import { useApp, navigate, PageHeader } from '../App.jsx'
 import { Avatar, Spinner, useToast, useConfirm, Empty } from './common.jsx'
 import { Icon } from './icons.jsx'
-import { Markdown, MarkdownEditor } from './markdown.jsx'
+import { Markdown, MarkdownEditor, CommentEditBox, mentionLabel } from './markdown.jsx'
 import { FileList } from './ItemDrawer.jsx'
 import { relTime, fmtDateTime } from '../util.js'
 
@@ -36,15 +36,18 @@ export default function PostView({ postId }) {
   return (
     <>
       <PageHeader crumbs={[{ label: '게시판', href: '#/posts' }, { label: post.categoryName, href: `#/posts?cat=${post.categoryId}` }]} title={post.title} icon={post.pinned ? 'pin' : 'doc'}
-        subtitle={`${post.categoryName} · ${post.author.name} · ${fmtDateTime(post.createdAt)} · 조회 ${post.viewCount}`}
-        actions={<>
-          {me.role === 'ADMIN' && <button className={`btn btn-white btn-sm ${post.pinned ? 'btn-strong' : ''}`} onClick={togglePin}><Icon name="pin" size={13} /> {post.pinned ? '고정됨' : '상단 고정'}</button>}
-          {canEdit && <button className="btn btn-white btn-sm" onClick={() => navigate(`/posts/${post.id}/edit`)}><Icon name="edit" size={13} /> 수정</button>}
-          {canEdit && <button className="btn btn-white btn-sm" onClick={remove} aria-label="삭제" title="삭제"><Icon name="trash" size={14} /> 삭제</button>}
-        </>} />
+        subtitle={`${post.categoryName} · ${post.author.name} · ${fmtDateTime(post.createdAt)} · 조회 ${post.viewCount}`} />
       <div className="page page-read">
         <article className="post card"><div className="card-body post-card-body">
-          <a className="tag" href={`#/posts?cat=${post.categoryId}`}>{post.pinned && <Icon name="pin" size={11} />} {post.categoryName}</a>
+          {/* 글 관련 버튼은 상단바가 아니라 본문 위에 */}
+          <div className="post-topline">
+            <a className="tag" href={`#/posts?cat=${post.categoryId}`}>{post.pinned && <Icon name="pin" size={11} />} {post.categoryName}</a>
+            <span className="grow" />
+            <button className="btn btn-sm" onClick={() => navigate(post.categoryId ? `/posts?cat=${post.categoryId}` : '/posts')}><Icon name="list" size={13} /> 목록</button>
+            {me.role === 'ADMIN' && <button className={`btn btn-sm ${post.pinned ? 'btn-strong' : ''}`} onClick={togglePin}><Icon name="pin" size={13} /> {post.pinned ? '고정됨' : '상단 고정'}</button>}
+            {canEdit && <button className="btn btn-sm" onClick={() => navigate(`/posts/${post.id}/edit`)}><Icon name="edit" size={13} /> 수정</button>}
+            {canEdit && <button className="btn btn-sm btn-danger-ghost" onClick={remove}><Icon name="trash" size={13} /> 삭제</button>}
+          </div>
           <h1 className="post-h1">{post.title}</h1>
           <div className="post-byline">
             <Avatar user={post.author} size={28} />
@@ -81,7 +84,6 @@ export default function PostView({ postId }) {
           {post.prevId ? <a href={`#/posts/${post.prevId}`}><span className="muted small">이전 글</span><span className="ellipsis">{post.prevTitle}</span></a> : <span />}
           {post.nextId ? <a href={`#/posts/${post.nextId}`} className="next"><span className="muted small">다음 글</span><span className="ellipsis">{post.nextTitle}</span></a> : <span />}
         </nav>
-        <div style={{ textAlign: 'center', marginTop: 16 }}><a className="btn btn-sm" href={`#/posts?cat=${post.categoryId}`}>목록으로</a></div>
       </div>
       {confirmDialog}
     </>
@@ -90,6 +92,7 @@ export default function PostView({ postId }) {
 
 function Comment({ c, me, mentionNames, postId, users, onChange, toast, confirm, canReply }) {
   const [replying, setReplying] = useState(false)
+  const [editing, setEditing] = useState(false)
   if (c.deleted) return <div className="comment deleted">삭제된 댓글입니다.</div>
   const canDelete = me.role === 'ADMIN' || c.author.id === me.id
   return (
@@ -99,17 +102,24 @@ function Comment({ c, me, mentionNames, postId, users, onChange, toast, confirm,
         <div className="comment-head">
           <b>{c.author.name}</b>
           <span className="muted small" title={fmtDateTime(c.createdAt)}>{relTime(c.createdAt)}</span>
+          {c.updatedAt && <span className="edited-mark" title={`수정: ${fmtDateTime(c.updatedAt)}`}>(수정됨)</span>}
         </div>
-        <Markdown text={c.content} mentionNames={mentionNames} className="comment-body" />
+        {editing
+          ? <CommentEditBox initial={c.content} users={users} mentionNames={mentionNames} onCancel={() => setEditing(false)}
+              onSave={async (text) => {
+                try { await api.put(`/api/post-comments/${c.id}`, { content: text }); setEditing(false); onChange() } catch (e) { toast(e.message, 'error') }
+              }} />
+          : <Markdown text={c.content} mentionNames={mentionNames} className="comment-body" />}
         <div className="comment-actions">
           {canReply && <button className="link" onClick={() => setReplying((v) => !v)}><Icon name="reply" size={12} /> 답글</button>}
+          {c.author.id === me.id && !editing && <button className="link link-muted" onClick={() => setEditing(true)}>수정</button>}
           {canDelete && <button className="link link-muted" onClick={async () => {
             if (!(await confirm('댓글을 삭제할까요?', { okText: '삭제' }))) return
             try { await api.del(`/api/post-comments/${c.id}`); onChange() } catch (e) { toast(e.message, 'error') }
           }}>삭제</button>}
         </div>
         {replying && <CommentForm postId={postId} parentId={c.id} users={users} mentionNames={mentionNames} toast={toast} autoFocus
-          initial={`@${c.author.username} `} onDone={() => { setReplying(false); onChange() }} onCancel={() => setReplying(false)} />}
+          initial={`@${mentionLabel(c.author)} `} onDone={() => { setReplying(false); onChange() }} onCancel={() => setReplying(false)} />}
       </div>
     </div>
   )
@@ -127,7 +137,7 @@ function CommentForm({ postId, parentId, users, mentionNames, onDone, onCancel, 
   return (
     <div className="comment-box">
       <MarkdownEditor value={text} onChange={setText} rows={3} users={users} mentionNames={mentionNames} autoFocus={autoFocus}
-        placeholder={parentId ? '답글을 입력하세요' : '댓글을 입력하세요. @아이디로 언급할 수 있습니다.'}
+        placeholder={parentId ? '답글을 입력하세요' : '댓글을 입력하세요. @이름으로 언급할 수 있습니다.'}
         onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit() }} />
       <div className="form-actions">
         <span className="hint grow">Ctrl+Enter 로 등록</span>

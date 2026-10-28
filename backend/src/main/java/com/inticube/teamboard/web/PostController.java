@@ -102,6 +102,12 @@ public class PostController {
         return postService.insertComment(id, req, me);
     }
 
+    /** 댓글 수정 (본인만) */
+    @PutMapping("/post-comments/{id}")
+    public PostCommentDto editComment(@PathVariable Long id, @Valid @RequestBody PostCommentRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        return postService.updateComment(id, req.content(), me);
+    }
+
     @DeleteMapping("/post-comments/{id}")
     public void deleteComment(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) { postService.deleteComment(id, me); }
 }

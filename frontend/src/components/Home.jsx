@@ -23,12 +23,10 @@ export default function Home() {
   const now = new Date()
   const hour = now.getHours()
   const greet = hour < 12 ? '좋은 아침이에요' : hour < 18 ? '좋은 오후예요' : '오늘도 수고하셨어요'
-  const dateLabel = `${now.getMonth() + 1}월 ${now.getDate()}일 ${['일', '월', '화', '수', '목', '금', '토'][now.getDay()]}요일`
 
   return (
     <>
-      <PageHeader icon="chart" title="대시보드" subtitle={`${greet}, ${me.name}님. 오늘 할 일을 확인하세요.`}
-        actions={<span className="btn btn-white btn-sm no-click"><Icon name="calendar" size={14} /> {dateLabel}</span>} />
+      <PageHeader icon="chart" title="대시보드" subtitle={`${greet}, ${me.name}님. 오늘 할 일을 확인하세요.`} />
       <div className="page">
         {!data ? <div className="card"><div className="card-body"><Spinner /></div></div> : (
           <>
@@ -85,7 +83,7 @@ export default function Home() {
                   <div className="card-header">워크스페이스 진행률</div>
                   <div className="card-body">
                     {data.boards.length === 0 && <p className="muted small" style={{ margin: 0 }}>워크스페이스가 없습니다.</p>}
-                    {data.boards.map((b) => {
+                    {data.boards.filter((b) => b.showProgress !== false).map((b) => {
                       const pct = b.itemCount ? Math.floor((b.doneCount / b.itemCount) * 100) : 0
                       return (
                         <a key={b.id} className="project-progress" href={`#/board/${b.id}`}>

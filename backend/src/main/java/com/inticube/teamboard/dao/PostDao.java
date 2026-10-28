@@ -37,6 +37,7 @@ public interface PostDao {
     List<Map<String, Object>> selectCommentCountByPosts(@Param("ids") Collection<Long> ids);
     int insertComment(PostComment c);
     int updateComment(PostComment c);
+    int updateCommentContent(PostComment c);
     int deleteComment(@Param("id") Long id);
     int deleteCommentsByPost(@Param("postId") Long postId);
 

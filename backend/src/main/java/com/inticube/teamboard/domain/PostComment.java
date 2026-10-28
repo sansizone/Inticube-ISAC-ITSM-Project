@@ -22,4 +22,7 @@ public class PostComment {
     private boolean deleted;
 
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    /** 댓글을 수정한 시각 (수정 안 했으면 null) */
+    private LocalDateTime updatedAt;
 }

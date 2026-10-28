@@ -4,7 +4,7 @@ import { useApp } from '../App.jsx'
 import { Modal, useToast, useConfirm, Popover, usePopover } from './common.jsx'
 import { PALETTE } from '../util.js'
 import { Icon, StatusIcon } from './icons.jsx'
-import { COLUMN_TYPES, columnsFor, boardColumns, columnConfig, TYPE_LABEL } from './Fields.jsx'
+import { COLUMN_TYPES, columnsFor, boardColumns, columnConfig, TYPE_LABEL, builtinLabel } from './Fields.jsx'
 import { MembersEditor } from './Workspace.jsx'
 import { fmtHours } from '../sla.js'
 
@@ -15,6 +15,7 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
   const [tab, setTab] = useState(!can ? 'members' : ['columns', 'members', 'types'].includes(initialTab) ? initialTab : 'general')
   const [keyPrefix, setKeyPrefix] = useState(board.keyPrefix || '')
   const [slaBusiness, setSlaBusiness] = useState(!!board.slaBusinessHours)
+  const [showProgress, setShowProgress] = useState(columnConfig(board).showProgress)
   const toast = useToast()
   const [confirm, confirmDialog] = useConfirm()
   const [name, setName] = useState(board.name)
@@ -60,7 +61,7 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
       </>}>
       <div className="seg" style={{ marginBottom: 14 }}>
         {can && <button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>기본·상태</button>}
-        {can && <button className={tab === 'types' ? 'active' : ''} onClick={() => setTab('types')}>유형·SLA</button>}
+        {can && <button className={tab === 'types' ? 'active' : ''} onClick={() => setTab('types')}>유형</button>}
         {can && <button className={tab === 'columns' ? 'active' : ''} onClick={() => setTab('columns')}>컬럼</button>}
         <button className={tab === 'members' ? 'active' : ''} onClick={() => setTab('members')}>멤버·공개</button>
       </div>
@@ -74,9 +75,16 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
         <label className="field" style={{ width: '11rem' }}><span>업무 키 접두어</span>
           <input className="input" value={keyPrefix} maxLength={10} onChange={(e) => setKeyPrefix(e.target.value.toUpperCase())} pattern="[A-Z][A-Z0-9]{1,9}" placeholder="REQ" />
           <span className="hint" style={{ margin: '4px 0 0' }}>업무 키 예: <b>{keyPrefix || 'TB'}-12</b></span></label>
-        <div className="field grow"><span>SLA 계산 기준</span>
-          <label className="check"><input type="checkbox" checked={slaBusiness} onChange={(e) => setSlaBusiness(e.target.checked)} /> 영업시간(평일 09~18시)만 계산</label>
-          <span className="hint" style={{ margin: '4px 0 0' }}>끄면 달력 시간 그대로 셉니다. 유형별 응답·처리 목표는 '유형·SLA' 탭에서 정합니다.</span></div>
+      </div>
+      <div className="field"><span>진행률</span>
+        <label className="check" style={{ fontWeight: 400 }}>
+          <input type="checkbox" checked={showProgress} onChange={async (e) => {
+            const on = e.target.checked; setShowProgress(on)
+            try { await api.put(`/api/boards/${board.id}/column-config`, { config: JSON.stringify({ ...columnConfig(board), showProgress: on }) }); onSaved() }
+            catch (x) { setShowProgress(!on); toast(x.message, 'error') }
+          }} /> 진행률(%) 표시
+        </label>
+        <p className="hint" style={{ margin: '4px 0 0' }}>업무를 처리하는 워크스페이스는 켜고, 고객사·솔루션처럼 목록만 관리하는 곳은 끄세요. 끄면 사이드바·대시보드·상단에 %가 나오지 않습니다. (바로 저장됨)</p>
       </div>
       <div className="field"><span>상태 라벨</span>
         <p className="hint" style={{ margin: '0 0 8px' }}>'완료' 체크된 상태는 진행률·지연 계산에서 완료로 처리됩니다.</p>
@@ -118,7 +126,7 @@ function ColorButton({ color, onPick }) {
 }
 
 /** 연결 컬럼: 대상 워크스페이스·표시 컬럼 선택 */
-function RelationTarget({ board, refBoardId, refColumnId, onChange }) {
+export function RelationTarget({ board, refBoardId, refColumnId, onChange }) {
   const { boards } = useApp()
   const [target, setTarget] = useState(null)
   useEffect(() => {
@@ -135,7 +143,7 @@ function RelationTarget({ board, refBoardId, refColumnId, onChange }) {
       </select>
       <span className="muted small nowrap">표시</span>
       <select className="input input-sm" value={refColumnId || ''} disabled={!target} onChange={(e) => onChange(refBoardId, Number(e.target.value) || null)} aria-label="표시할 컬럼">
-        <option value="">업무명</option>
+        <option value="">{target ? builtinLabel(target, 'name') : '업무명'}</option>
         {tcols.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
     </div>
@@ -177,10 +185,12 @@ function ColumnSettings({ board, onChanged, confirm, toast }) {
   }
   const typeSelect = (c) => (
     <select className="input input-sm" value={c.type} onChange={(e) => {
-      if (e.target.value === 'RELATION') { toast('연결 컬럼은 새 컬럼으로 추가하세요. (대상 워크스페이스 선택 필요)', 'error'); return }
+      // 연결로 바꾸면: 대상 워크스페이스를 고르고 기존 값을 이름으로 맞춰 연결하는 변환 창을 연다
+      if (e.target.value === 'RELATION') { setConverting(c); return }
       saveCol(c, { type: e.target.value })
     }} aria-label="유형">
-      {COLUMN_TYPES.filter(([k]) => k !== 'RELATION' || c.type === 'RELATION').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+      {COLUMN_TYPES.filter(([k]) => k !== 'RELATION' || c.type === 'RELATION' || c.scope === 'ITEM')
+        .map(([k, l]) => <option key={k} value={k}>{k === 'RELATION' && c.type !== 'RELATION' ? '연결 (다른 워크스페이스에서 선택)…' : l}</option>)}
     </select>
   )
 
@@ -192,7 +202,25 @@ function ColumnSettings({ board, onChanged, confirm, toast }) {
       </div>
       {scope === 'ITEM' ? <>
         <p className="hint" style={{ marginTop: 0 }}>순서·이름·표시 여부는 이 워크스페이스의 모든 보기(표·목록)에 적용됩니다. 보기마다 더 숨기려면 보기의 <b>컬럼</b> 버튼을 쓰세요. 업무명은 항상 첫 컬럼입니다.</p>
+        <p className="hint" style={{ marginTop: 0 }}>값을 <b>다른 워크스페이스의 항목</b>에서 골라야 하는 컬럼(예: 서비스요청자 → 고객관리의 고객)은 유형을 <b>연결</b>로 바꾸거나 <Icon name="link" size={12} /> 버튼을 누르세요. 이미 입력된 값은 이름으로 자동 연결되고, 못 찾은 값은 지우지 않고 따로 보관합니다.</p>
         <div className="col-editor">
+          {/* 고정 컬럼: 항상 맨 앞에 보이고 숨기거나 옮길 수 없지만 이름은 바꿀 수 있음 */}
+          {['key', 'name'].map((k) => (
+            <div key={k} className="col-edit-row">
+              <span className="col-kind">고정</span>
+              <input className="input input-sm grow" defaultValue={builtinLabel(board, k)} key={`${k}:${builtinLabel(board, k)}`} maxLength={30}
+                aria-label="컬럼 이름" placeholder={k === 'name' ? '업무명' : '키'}
+                onBlur={(e) => {
+                  const v = e.target.value.trim(); const def = k === 'name' ? '업무명' : '키'
+                  if (v === builtinLabel(board, k)) return
+                  const labels = { ...cfg.labels }
+                  if (!v || v === def) delete labels[k]; else labels[k] = v
+                  saveCfg({ labels })
+                }} />
+              <span className="muted small nowrap">{k === 'name' ? '예: 솔루션명, 고객명' : '업무 번호'}</span>
+              <span /><span /><span /><span /><span />
+            </div>
+          ))}
           {all.map((c, idx) => (
             <div key={c.key} className={`col-edit-row ${c.hidden ? 'is-hidden' : ''}`}>
               <span className="col-kind">{c.builtin ? '기본' : TYPE_LABEL[c.col.type]?.split(' ')[0]}</span>
@@ -202,14 +230,8 @@ function ColumnSettings({ board, onChanged, confirm, toast }) {
                   if (!v || v === c.label) { e.target.value = c.label; return }
                   if (c.builtin) saveCfg({ labels: { ...cfg.labels, [c.key]: v } }); else saveCol(c.col, { name: v })
                 }} />
-              {!c.builtin && typeSelect(c.col)}
-              {!c.builtin && c.col.type === 'RELATION' && (
-                <RelationTarget board={board} refBoardId={c.col.refBoardId} refColumnId={c.col.refColumnId}
-                  onChange={async (rb, rc) => {
-                    if (rb !== c.col.refBoardId && !(await confirm('연결 대상을 바꾸면 이 컬럼에 입력된 연결 값이 모두 지워집니다. 계속할까요?', { okText: '변경' }))) return
-                    saveCol(c.col, { refBoardId: rb, refColumnId: rc })
-                  }} />
-              )}
+              {/* 격자 칸 고정: 종류 | 이름 | 유형 | 표시 | ↑ | ↓ | 동작1 | 동작2 (+ 연결 대상은 다음 줄) */}
+              {c.builtin ? <span /> : typeSelect(c.col)}
               <label className="check small nowrap"><input type="checkbox" checked={!c.hidden}
                 onChange={(e) => {
                   if (c.builtin) saveCfg({ hidden: e.target.checked ? cfg.hidden.filter((k) => k !== c.key) : [...cfg.hidden, c.key] })
@@ -221,9 +243,21 @@ function ColumnSettings({ board, onChanged, confirm, toast }) {
                 ? <button className="icon-btn" aria-label="기본 이름으로" title="기본 이름으로" disabled={!cfg.labels[c.key]}
                     onClick={() => { const l = { ...cfg.labels }; delete l[c.key]; saveCfg({ labels: l }) }}><Icon name="reply" size={14} /></button>
                 : <>
-                  {['TEXT', 'DROPDOWN'].includes(c.col.type) && <button className="icon-btn" aria-label="연결 컬럼으로 변환" title="연결 컬럼으로 변환 (다른 워크스페이스 항목과 이름으로 연결)" onClick={() => setConverting(c.col)}><Icon name="link" size={14} /></button>}
+                  {c.col.type !== 'RELATION'
+                    ? <button className="icon-btn" aria-label="연결 컬럼으로 변환" title="연결 컬럼으로 변환 (다른 워크스페이스 항목에서 고르도록)" onClick={() => setConverting(c.col)}><Icon name="link" size={14} /></button>
+                    : <span />}
                   <button className="icon-btn" aria-label="삭제" onClick={() => del(c.col)}><Icon name="trash" size={14} /></button>
                 </>}
+              {c.builtin && <span />}
+              {!c.builtin && c.col.type === 'RELATION' && (
+                <div className="col-edit-ref">
+                  <RelationTarget board={board} refBoardId={c.col.refBoardId} refColumnId={c.col.refColumnId}
+                    onChange={async (rb, rc) => {
+                      if (rb !== c.col.refBoardId && !(await confirm('연결 대상을 바꾸면 이 컬럼에 입력된 연결 값이 모두 지워집니다. 계속할까요?', { okText: '변경' }))) return
+                      saveCol(c.col, { refBoardId: rb, refColumnId: rc })
+                    }} />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -328,7 +362,7 @@ function ConvertModal({ board, col, onClose, onDone }) {
   )
 }
 
-/** 업무 유형과 SLA 목표 편집 */
+/** 업무 유형 편집 (이름·색·아이콘·기본 유형) */
 function TypeSettings({ board, toast, confirm, onSaved }) {
   const [list, setList] = useState((board.types || []).map((t) => ({ ...t })))
   const [busy, setBusy] = useState(false)
@@ -349,16 +383,14 @@ function TypeSettings({ board, toast, confirm, onSaved }) {
   }
   return (
     <div>
-      <p className="hint" style={{ marginTop: 0 }}>유형마다 <b>응답 목표</b>(첫 상태 변경·담당자 지정·등록자 외 댓글까지)와 <b>처리 목표</b>(완료 상태까지)를 시간 단위로 정합니다. 목표가 있으면 업무에 SLA 배지가 붙고, 처리 목표 2시간 전·초과 시 담당자에게 알립니다. 비우면 SLA 없음.</p>
+      <p className="hint" style={{ marginTop: 0 }}>업무를 분류할 유형을 정합니다. <b>기본</b>으로 고른 유형이 새 업무에 붙습니다.</p>
       <div className="type-editor">
-        <div className="type-row type-head"><span /><span>이름</span><span>아이콘</span><span>응답(h)</span><span>처리(h)</span><span>기본</span><span /></div>
+        <div className="type-row type-head"><span /><span>이름</span><span>아이콘</span><span>기본</span><span /></div>
         {list.map((t, idx) => (
           <div key={t.id ?? `n${idx}`} className="type-row">
             <ColorButton color={t.color} onPick={(c) => set(idx, { color: c })} />
             <input className="input input-sm" value={t.name} maxLength={50} onChange={(e) => set(idx, { name: e.target.value })} aria-label="유형 이름" />
             <select className="input input-sm" value={t.icon || 'tag'} onChange={(e) => set(idx, { icon: e.target.value })} aria-label="아이콘">{TYPE_ICONS.map((k) => <option key={k} value={k}>{k}</option>)}</select>
-            <input className="input input-sm" inputMode="numeric" value={t.responseHours ?? ''} placeholder="-" onChange={(e) => set(idx, { responseHours: e.target.value === '' ? null : Number(e.target.value) })} aria-label="응답 목표 시간" />
-            <input className="input input-sm" inputMode="numeric" value={t.resolveHours ?? ''} placeholder="-" onChange={(e) => set(idx, { resolveHours: e.target.value === '' ? null : Number(e.target.value) })} aria-label="처리 목표 시간" />
             <input type="radio" name="deftype" checked={!!t.isDefault} onChange={() => setList((l) => l.map((x, i) => ({ ...x, isDefault: i === idx })))} aria-label="기본 유형" />
             <span className="row gap-xs">
               <button className="icon-btn" onClick={() => move(idx, -1)} disabled={idx === 0} aria-label="위로">↑</button>
@@ -373,7 +405,6 @@ function TypeSettings({ board, toast, confirm, onSaved }) {
         <span className="grow" />
         <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>유형 저장</button>
       </div>
-      <p className="hint">예) 장애: 응답 1h · 처리 8h / 요청: 응답 4h · 처리 {fmtHours(72)} / 정기작업: 없음</p>
     </div>
   )
 }

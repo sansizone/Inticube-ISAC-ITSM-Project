@@ -30,4 +30,7 @@ public class ItemUpdate {
     private boolean system;
 
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    /** 댓글을 수정한 시각 (수정 안 했으면 null → 화면에 '수정됨' 표시 안 함) */
+    private LocalDateTime updatedAt;
 }

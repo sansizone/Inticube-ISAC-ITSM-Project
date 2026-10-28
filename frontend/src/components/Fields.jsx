@@ -6,19 +6,16 @@ import { api } from '../api.js'
 /** 사용자 정의 컬럼 유형 */
 export const COLUMN_TYPES = [
   ['TEXT', '텍스트'], ['LONG_TEXT', '긴 텍스트'], ['NUMBER', '숫자'], ['DATE', '날짜'], ['DATETIME', '날짜+시간'],
-  ['PEOPLE', '사람'], ['DROPDOWN', '드롭다운'], ['LINK', '링크'], ['RELATION', '연결'],
+  ['PEOPLE', '사람'], ['DROPDOWN', '드롭다운'], ['LINK', 'URL 링크'], ['RELATION', '연결 (다른 워크스페이스)'],
 ]
 
 /** 기본 컬럼 (이름 변경·숨김·순서 변경 가능) */
 export const BUILTIN_COLUMNS = [
-  { key: 'type', label: '유형' },
   { key: 'status', label: '상태' },
   { key: 'assignee', label: '담당자' },
-  { key: 'sla', label: 'SLA' },
   { key: 'due', label: '마감일' },
   { key: 'start', label: '시작일' },
   { key: 'priority', label: '우선순위' },
-  { key: 'duty', label: '담당업무' },
   { key: 'version', label: '버전' },
   { key: 'progress', label: '진척률' },
   { key: 'estimate', label: '예상 시간' },
@@ -29,7 +26,8 @@ export const BUILTIN_COLUMNS = [
   { key: 'updated', label: '수정일' },
 ]
 const BUILTIN_DEFAULT_HIDDEN = ['start', 'group', 'updated', 'version', 'progress', 'estimate', 'spent', 'resolved']
-const BUILTIN_LABEL = Object.fromEntries(BUILTIN_COLUMNS.map((c) => [c.key, c.label]))
+// name(업무명)·key(키)는 항상 보이는 고정 컬럼이지만 이름은 워크스페이스마다 바꿀 수 있음 (예: 업무명 → 솔루션명)
+const BUILTIN_LABEL = Object.fromEntries([...BUILTIN_COLUMNS.map((c) => [c.key, c.label]), ['name', '업무명'], ['key', '키']])
 
 /** board.columnConfig(JSON) → { labels: {key: 이름}, hidden: [key], order: [key] } */
 export function columnConfig(board) {
@@ -40,7 +38,7 @@ export function columnConfig(board) {
   let hidden = c?.hidden || BUILTIN_DEFAULT_HIDDEN
   if (c && known) hidden = [...new Set([...hidden, ...BUILTIN_DEFAULT_HIDDEN.filter((k) => !known.includes(k))])]
   else if (c && !known) hidden = [...new Set([...hidden, ...BUILTIN_DEFAULT_HIDDEN.filter((k) => !['start', 'group', 'updated'].includes(k))])]
-  return { labels: c?.labels || {}, hidden, order: c?.order || [], widths: c?.widths || {}, known: BUILTIN_COLUMNS.map((b) => b.key) }
+  return { labels: c?.labels || {}, hidden, order: c?.order || [], widths: c?.widths || {}, known: BUILTIN_COLUMNS.map((b) => b.key), showProgress: c?.showProgress !== false }
 }
 
 /** 기본 컬럼 표시 이름 (설정에서 바꾼 이름) */
@@ -83,9 +81,9 @@ function RelationView({ col, value, compact }) {
   return (
     <span className="rel-cell">
       {shown.map((id) => (
-        <a key={id} className="rel-chip" href={`#/board/${col.refBoardId}?item=${id}`} onClick={(e) => e.stopPropagation()} title={`${refLabel(col.id, id)} 열기`}>
-          <Icon name="link" size={11} /><span className="ellipsis">{refLabel(col.id, id)}</span>
-        </a>
+        // 드롭다운 값처럼 색 태그로 표시 (링크 아이콘 없이), 마우스를 올리면 강조 + 누르면 원본 항목 열기
+        <a key={id} className="dd-tag rel-tag" style={{ '--c': tagColor(refLabel(col.id, id)) }} href={`#/board/${col.refBoardId}?item=${id}`}
+          onClick={(e) => e.stopPropagation()} title={`${refLabel(col.id, id)} — 눌러서 열기`}>{refLabel(col.id, id)}</a>
       ))}
       {compact && ids.length > 2 && <span className="muted small">+{ids.length - 2}</span>}
     </span>
@@ -93,7 +91,7 @@ function RelationView({ col, value, compact }) {
 }
 
 /** 연결 컬럼 편집: 연결된 항목 칩 + 검색해서 추가 */
-export function RelationEditor({ col, value, onSave, targetName }) {
+export function RelationEditor({ col, value, onSave, targetName, compact }) {
   const ids = relIds(value)
   const pop = usePopover()
   const [q, setQ] = useState('')
@@ -109,16 +107,7 @@ export function RelationEditor({ col, value, onSave, targetName }) {
     return () => clearTimeout(t)
   }, [q, pop.anchor, col.id])
   const save = (next) => onSave(next.join(','))
-  return (
-    <div className="rel-editor">
-      {ids.map((id) => (
-        <span key={id} className="rel-chip">
-          <a href={`#/board/${col.refBoardId}?item=${id}`} title="열기"><Icon name="link" size={11} /> {refLabel(col.id, id)}</a>
-          <button className="rel-x" aria-label="연결 해제" onClick={() => save(ids.filter((x) => x !== id))}><Icon name="x" size={11} /></button>
-        </span>
-      ))}
-      <button className="rel-add" onClick={(e) => { setQ(''); setOpts(null); pop.open(e) }}><Icon name="plus" size={12} /> {ids.length ? '추가' : '연결'}</button>
-      {pop.anchor && (
+  const renderPop = () => pop.anchor && (
         <Popover anchor={pop.anchor} onClose={pop.close} width={320}>
           <div className="menu">
             <div className="menu-title">{targetName || '대상 워크스페이스'}에서 선택</div>
@@ -141,7 +130,36 @@ export function RelationEditor({ col, value, onSave, targetName }) {
             </div>
           </div>
         </Popover>
-      )}
+  )
+  const openPick = (e) => { setQ(''); setOpts(null); pop.open(e) }
+  // 표 칸: 태그만 보이고 칸을 누르면 고르기 창
+  // 표 칸: 할당된 값은 눌러서 원본 항목 열기 + 옆 ×로 할당 해제, 비어 있으면 칸을 눌러 선택
+  if (compact) return (
+    <>
+      {ids.length === 0
+        ? <button type="button" className="cell-edit" onClick={openPick} title="눌러서 선택"><span className="cell-empty" /></button>
+        : <span className="rel-cell rel-cell-edit">
+            {ids.map((id) => (
+              <span key={id} className="dd-tag rel-tag rel-tag-edit" style={{ '--c': tagColor(refLabel(col.id, id)) }}>
+                <a href={`#/board/${col.refBoardId}?item=${id}`} onClick={(e) => e.stopPropagation()} title={`${refLabel(col.id, id)} — 눌러서 열기`}>{refLabel(col.id, id)}</a>
+                <button type="button" className="rel-x" aria-label="할당 해제" title="할당 해제"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); save(ids.filter((x) => x !== id)) }}><Icon name="x" size={11} /></button>
+              </span>
+            ))}
+          </span>}
+      {renderPop()}
+    </>
+  )
+  return (
+    <div className="rel-editor">
+      {ids.map((id) => (
+        <span key={id} className="dd-tag rel-tag rel-tag-edit" style={{ '--c': tagColor(refLabel(col.id, id)) }}>
+          <a href={`#/board/${col.refBoardId}?item=${id}`} title={`${refLabel(col.id, id)} — 눌러서 열기`}>{refLabel(col.id, id)}</a>
+          <button className="rel-x" aria-label="연결 해제" title="연결 해제" onClick={() => save(ids.filter((x) => x !== id))}><Icon name="x" size={11} /></button>
+        </span>
+      ))}
+      <button className="rel-add" onClick={(e) => { setQ(''); setOpts(null); pop.open(e) }}><Icon name="search" size={12} /> {ids.length ? '추가' : `${targetName || ''}에서 선택`}</button>
+      {renderPop()}
     </div>
   )
 }
@@ -210,17 +228,127 @@ export function FieldView({ col, value, compact }) {
 
 /** 상세 화면 편집기: 보기 상태에서 누르면 편집, 포커스를 잃거나 Enter 면 저장 */
 export function FieldEditor(props) {
-  if (props.col.type === 'RELATION') return <RelationEditor col={props.col} value={props.value} onSave={props.onSave} targetName={props.targetName} />
+  if (props.col.type === 'RELATION') return <RelationEditor col={props.col} value={props.value} onSave={props.onSave} targetName={props.targetName} compact={props.compact} />
   return <PlainFieldEditor {...props} />
 }
 
-function PlainFieldEditor({ col, value, onSave, options = [], users = [] }) {
+function PlainFieldEditor({ col, value, onSave, options = [], users = [], compact }) {
+  if (col.type === 'PEOPLE') return <PeopleEditor value={value} onSave={onSave} options={options} users={users} compact={compact} />
+  if (col.type === 'DROPDOWN') return <DropdownEditor value={value} onSave={onSave} options={options} compact={compact} />
+  return <TextishFieldEditor col={col} value={value} onSave={onSave} compact={compact} />
+}
+
+/** 사람 컬럼 편집: 선택된 사람 칩 + 검색해서 고르기 (계정 목록 기준, 계정 없는 이름도 추가 가능) */
+export function PeopleEditor({ value, onSave, options = [], users = [], compact }) {
+  const names = splitPeople(value)
+  const pop = usePopover()
+  const [q, setQ] = useState('')
+  const save = (next) => onSave([...new Set(next)].join(', '))
+  const byName = new Map(users.map((u) => [u.name, u]))
+  // 후보: 계정 사용자 + 이 컬럼에 이미 쓰인 이름(계정 없는 사람)
+  const extra = options.map(([o]) => o).flatMap(splitPeople).filter((n) => !byName.has(n))
+  const cands = [...users.map((u) => ({ name: u.name, user: u, sub: [u.department, u.username].filter(Boolean).join(' · ') })),
+    ...[...new Set(extra)].map((n) => ({ name: n, user: nameUser(n), sub: '계정 없음' }))]
+  const ql = q.trim().toLowerCase()
+  const shown = (ql ? cands.filter((c) => c.name.toLowerCase().includes(ql) || (c.sub || '').toLowerCase().includes(ql)) : cands).slice(0, 80)
+  const canAdd = ql && !cands.some((c) => c.name === q.trim())
+  const renderPop = () => pop.anchor && (
+        <Popover anchor={pop.anchor} onClose={pop.close} width={320}>
+          <div className="menu">
+            <div className="filter-search" style={{ margin: '0 6px 6px' }}>
+              <Icon name="search" size={13} />
+              <input autoFocus placeholder="이름·부서·아이디 검색" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: '100%' }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && canAdd) { e.preventDefault(); save([...names, q.trim()]); setQ('') } }} />
+            </div>
+            <div style={{ maxHeight: '18rem', overflowY: 'auto' }}>
+              {shown.map((c) => {
+                const on = names.includes(c.name)
+                return (
+                  <button key={`${c.name}|${c.sub}`} className={`menu-row ${on ? 'active' : ''}`} onClick={() => save(on ? names.filter((x) => x !== c.name) : [...names, c.name])}>
+                    <span className={`check-box ${on ? 'on' : ''}`}>{on && <Icon name="check" size={11} />}</span>
+                    <Avatar user={c.user} size={20} />
+                    <span className="grow ellipsis">{c.name}{c.sub && <span className="muted small"> · {c.sub}</span>}</span>
+                  </button>
+                )
+              })}
+              {canAdd && <button className="menu-row" onClick={() => { save([...names, q.trim()]); setQ('') }}><Icon name="plus" size={13} /> '{q.trim()}' 이름으로 추가</button>}
+              {shown.length === 0 && !canAdd && <div className="menu-empty">결과가 없습니다.</div>}
+            </div>
+          </div>
+        </Popover>
+  )
+  if (compact) return (
+    <>
+      <button type="button" className="cell-edit" onClick={(e) => { setQ(''); pop.open(e) }} title="눌러서 선택">
+        {names.length ? <FieldView col={{ type: 'PEOPLE' }} value={value} compact /> : <span className="cell-empty" />}
+      </button>
+      {renderPop()}
+    </>
+  )
+  return (
+    <div className="rel-editor">
+      {names.map((n) => (
+        <span key={n} className="rel-chip person-pick">
+          <Avatar user={byName.get(n) || nameUser(n)} size={16} /> <span className="ellipsis">{n}</span>
+          <button className="rel-x" aria-label={`${n} 빼기`} onClick={() => save(names.filter((x) => x !== n))}><Icon name="x" size={11} /></button>
+        </span>
+      ))}
+      <button className="rel-add" onClick={(e) => { setQ(''); pop.open(e) }}><Icon name="search" size={12} /> {names.length ? '추가' : '사람 선택'}</button>
+      {renderPop()}
+    </div>
+  )
+}
+
+/** 드롭다운 컬럼 편집: 지금까지 쓰인 값 목록에서 고르기 + 검색 + 새 값 */
+export function DropdownEditor({ value, onSave, options = [], compact }) {
+  const pop = usePopover()
+  const [q, setQ] = useState('')
+  const ql = q.trim().toLowerCase()
+  const shown = (ql ? options.filter(([o]) => o.toLowerCase().includes(ql)) : options).slice(0, 100)
+  const canAdd = ql && !options.some(([o]) => o === q.trim())
+  const pick = (v) => { pop.close(); if ((v || '') !== (value || '')) onSave(v) }
+  return (
+    <>
+      {compact
+        ? <button type="button" className="cell-edit" onClick={(e) => { setQ(''); pop.open(e) }} title="눌러서 선택">
+            {value ? <span className="dd-tag" style={{ '--c': tagColor(value) }}>{value}</span> : <span className="cell-empty" />}
+          </button>
+        : <button className="field-view dd-pick" onClick={(e) => { setQ(''); pop.open(e) }} title="눌러서 선택">
+            {value ? <span className="dd-tag" style={{ '--c': tagColor(value) }}>{value}</span> : <span className="muted">선택</span>}
+            <Icon name="chevronDown" size={13} className="muted" />
+          </button>}
+      {pop.anchor && (
+        <Popover anchor={pop.anchor} onClose={pop.close} width={280}>
+          <div className="menu">
+            <div className="filter-search" style={{ margin: '0 6px 6px' }}>
+              <Icon name="search" size={13} />
+              <input autoFocus placeholder="검색 또는 새 값" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: '100%' }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (canAdd) pick(q.trim()); else if (shown[0]) pick(shown[0][0]) } }} />
+            </div>
+            <div style={{ maxHeight: '18rem', overflowY: 'auto' }}>
+              {value && <button className="menu-row muted" onClick={() => pick('')}><Icon name="x" size={13} /> 비우기</button>}
+              {shown.map(([o, n]) => (
+                <button key={o} className={`menu-row ${o === value ? 'active' : ''}`} onClick={() => pick(o)}>
+                  <span className="dd-tag" style={{ '--c': tagColor(o) }}>{o}</span><span className="grow" /><span className="muted small">{n}</span>
+                </button>
+              ))}
+              {canAdd && <button className="menu-row" onClick={() => pick(q.trim())}><Icon name="plus" size={13} /> '{q.trim()}' 새 값</button>}
+              {shown.length === 0 && !canAdd && <div className="menu-empty">값이 없습니다. 입력해서 새로 만드세요.</div>}
+            </div>
+          </div>
+        </Popover>
+      )}
+    </>
+  )
+}
+
+function TextishFieldEditor({ col, value, onSave, compact }) {
   const [editing, setEditing] = useState(false)
+  const pop = usePopover()
   const [v, setV] = useState(value || '')
   const ref = useRef(null)
   useEffect(() => { if (!editing) setV(value || '') }, [value, editing])
   useEffect(() => { if (editing) ref.current?.focus() }, [editing])
-  const listId = useMemo(() => `dl-${col.id}`, [col.id])
 
   const commit = () => {
     setEditing(false)
@@ -228,8 +356,34 @@ function PlainFieldEditor({ col, value, onSave, options = [], users = [] }) {
     if (col.type === 'DATETIME' && out) out = out.replace('T', ' ')
     if ((out || '') !== (value || '')) onSave(out)
   }
-  if (!editing) {
+  // 표 칸의 긴 텍스트: 칸 안이 아니라 떠 있는 창에서 편집
+  if (compact && col.type === 'LONG_TEXT') {
     return (
+      <>
+        <button type="button" className="cell-edit" onClick={(e) => { setV(value || ''); pop.open(e) }} title="눌러서 수정">
+          {value ? <FieldView col={col} value={value} compact /> : <span className="cell-empty" />}
+        </button>
+        {pop.anchor && (
+          <Popover anchor={pop.anchor} onClose={() => { pop.close(); if ((v || '') !== (value || '')) onSave(v) }} width={380}>
+            <div className="menu" style={{ padding: 6 }}>
+              <textarea className="input field-input" autoFocus rows={8} value={v} onChange={(e) => setV(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') { setV(value || ''); pop.close() }
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); pop.close(); if ((v || '') !== (value || '')) onSave(v) }
+                }} />
+              <div className="hint" style={{ margin: '4px 2px 0' }}>바깥을 누르거나 Ctrl+Enter 로 저장 · Esc 취소</div>
+            </div>
+          </Popover>
+        )}
+      </>
+    )
+  }
+  if (!editing) {
+    return compact
+      ? <button type="button" className="cell-edit" onClick={() => setEditing(true)} title="눌러서 수정">
+          {value ? <FieldView col={col} value={value} compact /> : <span className="cell-empty" />}
+        </button>
+      : (
       <button className={`field-view ${col.type === 'LONG_TEXT' ? 'multi' : ''}`} onClick={() => setEditing(true)} title="눌러서 수정">
         {value ? <FieldView col={col} value={value} /> : <span className="muted">비어 있음</span>}
       </button>
@@ -251,17 +405,6 @@ function PlainFieldEditor({ col, value, onSave, options = [], users = [] }) {
       return <input type="datetime-local" className="input input-sm field-input" {...common} value={v.replace(' ', 'T').slice(0, 16)} />
     case 'NUMBER':
       return <input inputMode="decimal" className="input input-sm field-input" {...common} />
-    case 'DROPDOWN':
-    case 'PEOPLE':
-      return (
-        <>
-          <input className="input input-sm field-input" list={listId} placeholder={col.type === 'PEOPLE' ? '이름, 이름' : ''} {...common} />
-          <datalist id={listId}>
-            {(col.type === 'PEOPLE' ? [...new Set([...options.map(([o]) => o), ...users.map((u) => u.name)])] : options.map(([o]) => o))
-              .slice(0, 300).map((o) => <option key={o} value={o} />)}
-          </datalist>
-        </>
-      )
     default:
       return <input className="input input-sm field-input" {...common} />
   }

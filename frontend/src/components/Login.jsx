@@ -4,7 +4,10 @@ import { api } from '../api.js'
 import { ThemeMenu } from './Topnav.jsx'
 
 export default function Login({ onLogin }) {
-  const [username, setUsername] = useState('')
+  // 아이디 저장: 이 브라우저에만 아이디(비밀번호 아님)를 기억
+  const savedId = (() => { try { return localStorage.getItem('tb.savedId') || '' } catch { return '' } })()
+  const [username, setUsername] = useState(savedId)
+  const [remember, setRemember] = useState(!!savedId)
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
   const [error, setError] = useState('')
@@ -17,7 +20,8 @@ export default function Login({ onLogin }) {
     setBusy(true); setError('')
     try {
       await api.get('/api/auth/csrf')
-      const r = await api.post('/api/auth/login', { username, password })
+      const r = await api.post('/api/auth/login', { username: username.trim(), password })
+      try { if (remember) localStorage.setItem('tb.savedId', username.trim()); else localStorage.removeItem('tb.savedId') } catch { /* 저장소 사용 불가 */ }
       if (r.mfaRequired) { setMfa(true); setPassword('') } else onLogin(r.me)
     } catch (err) {
       setError(err.message)
@@ -52,30 +56,42 @@ export default function Login({ onLogin }) {
   }
 
   return (
-    <div className="login-wrap">
+    <div className="login-wrap login-l2">
       <div className="login-theme"><ThemeMenu compact /></div>
       <form className="login-card" onSubmit={submit}>
-        <span className="brand-mark brand-mark-lg" />
-        <h1 className="login-title"><b>인티큐브</b> ISAC-PROJECT</h1>
-        <p className="muted" style={{ margin: '0 0 24px' }}>로그인하여 팀의 업무와 소식을 한곳에서</p>
-        <label className="field">
-          <span>아이디</span>
-          <input className="input" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+        {/* L2: 가운데 브랜드 + 카드형 폼 (색은 메인 화면의 파랑·네이비에 맞춤) */}
+        <div className="login-brand">
+          <span className="brand-mark brand-mark-lg" />
+          <div className="login-brand-sub">인티큐브</div>
+          <h1 className="login-brand-name">ISAC-PROJECT</h1>
+          <p className="login-brand-desc">회사 이메일 계정으로 로그인하세요</p>
+        </div>
+        {/* 입력칸: 왼쪽 아이콘 + 옅은 배경, 포커스 시 흰 배경·파란 테두리 */}
+        <label className="login-field">
+          <span className="sr-only">아이디</span>
+          <Icon name="user" size={17} className="login-field-icon" />
+          <input id="login-id" className="login-input" autoFocus={!savedId} autoComplete="username" placeholder="이메일 주소"
+            value={username} onChange={(e) => setUsername(e.target.value)} required />
         </label>
-        <label className="field">
-          <span>비밀번호</span>
-          <span className="pw-wrap">
-            <input className="input" type={showPw ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            <button type="button" className="pw-eye" onClick={() => setShowPw((v) => !v)}
-              aria-label={showPw ? '비밀번호 숨기기' : '비밀번호 보기'} title={showPw ? '비밀번호 숨기기' : '비밀번호 보기'}>
-              <Icon name={showPw ? 'eyeOff' : 'eye'} size={17} />
-            </button>
-          </span>
+        <label className="login-field">
+          <span className="sr-only">비밀번호</span>
+          <Icon name="lock" size={17} className="login-field-icon" />
+          <input id="login-pw" className="login-input" autoFocus={!!savedId} type={showPw ? 'text' : 'password'} autoComplete="current-password" placeholder="비밀번호"
+            value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <button type="button" className="login-eye" onClick={() => setShowPw((v) => !v)}
+            aria-label={showPw ? '비밀번호 숨기기' : '비밀번호 보기'} title={showPw ? '비밀번호 숨기기' : '비밀번호 보기'}>
+            <Icon name={showPw ? 'eyeOff' : 'eye'} size={17} />
+          </button>
         </label>
         {error && <div className="form-error" role="alert">{error}</div>}
-        <button className="btn btn-primary btn-block" disabled={busy}>{busy ? '로그인 중…' : '로그인'}</button>
-        <p className="hint" style={{ marginTop: 16, textAlign: 'center' }}>계정이 없으면 관리자에게 요청하세요.</p>
+        <button className="btn btn-primary btn-block login-submit" disabled={busy}>{busy ? '로그인 중…' : '로그인'}</button>
+        <div className="login-row">
+          <label className="check login-remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> 아이디 저장</label>
+          <span>비밀번호 분실 시 관리자 문의</span>
+        </div>
       </form>
+      <div className="login-foot">사내 전용 시스템</div>
     </div>
   )
+
 }

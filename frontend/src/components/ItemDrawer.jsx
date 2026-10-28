@@ -7,7 +7,7 @@ import { StatusChip, AssigneeChip, PriorityChip, DateChip, DutyChip, TypeChip, V
 import { itemKey, fmtHours, linkLabel, LINK_TYPES, slaOf } from '../sla.js'
 import { buildDutyIndex } from '../dutyTree.js'
 import { Icon } from './icons.jsx'
-import { Markdown, MarkdownEditor } from './markdown.jsx'
+import { Markdown, MarkdownEditor, CommentEditBox } from './markdown.jsx'
 import { relTime, fmtSize, isOverdue, fmtDateTime } from '../util.js'
 import { FieldEditor, columnsFor, distinctValues, nameUser, rememberRefs, builtinLabel } from './Fields.jsx'
 
@@ -68,6 +68,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
   for (const u of sorted) if (u.parentId) (replies[u.parentId] ||= []).push(u)
   const activity = sorted.filter((u) => !u.parentId || !sorted.some((x) => x.id === u.parentId))
   const [replyTo, setReplyTo] = useState(null)
+  const [editingId, setEditingId] = useState(null)
   const saveField = async (col, v) => {
     try {
       await ops.updateItem(itemId, { values: { [col.id]: v } })
@@ -80,8 +81,10 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
       <div className="act-comment-head">
         <Avatar user={authorOf(u)} size={22} /><b>{authorOf(u).name}</b>
         <span className="act-time" title={fmtDateTime(u.createdAt)}>{fmtDateTime(u.createdAt)}</span>
+        {u.updatedAt && <span className="edited-mark" title={`수정: ${fmtDateTime(u.updatedAt)}`}>(수정됨)</span>}
         <span style={{ marginLeft: 'auto' }} />
         {!isReply && <button className="link small" onClick={() => setReplyTo(replyTo === u.id ? null : u.id)}>답글</button>}
+        {u.author?.id === me.id && editingId !== u.id && <button className="link small" onClick={() => setEditingId(u.id)}>수정</button>}
         {(u.author?.id === me.id || me.role === 'ADMIN') && (
           <button className="icon-btn icon-btn-sm" aria-label="댓글 삭제" onClick={async () => {
             if (!(await confirm(isReply ? '이 답글을 삭제할까요?' : '이 댓글을 삭제할까요? 답글도 함께 삭제됩니다.', { okText: '삭제' }))) return
@@ -89,7 +92,12 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
           }}><Icon name="trash" size={13} /></button>
         )}
       </div>
-      <Markdown text={u.content} mentionNames={mentionNames} className="act-body" />
+      {editingId === u.id
+        ? <CommentEditBox initial={u.content} users={users} mentionNames={mentionNames} onCancel={() => setEditingId(null)}
+            onSave={async (text) => {
+              try { await api.put(`/api/updates/${u.id}`, { content: text }); setEditingId(null); await onPosted() } catch (e) { toast(e.message, 'error') }
+            }} />
+        : <Markdown text={u.content} mentionNames={mentionNames} className="act-body" />}
       {!isReply && (replies[u.id] || []).map((r) => comment(r, true))}
       {!isReply && replyTo === u.id && (
         <div className="act-reply"><CommentBox itemId={itemId} parentId={u.id} users={users} mentionNames={mentionNames} toast={toast} startOpen
@@ -125,12 +133,9 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }} aria-label="업무 이름" />
 
                 <div className="props">
-                  <Prop label={L('type')}><TypeChip item={item} types={board.types} onChange={update} readOnly={!!item.parentId} /></Prop>
-                  {(() => { const t = board.types?.find((x) => x.id === item.typeId); return slaOf(item, t, board) ? <Prop label="SLA"><span className="prop-static"><SlaBadge item={item} board={board} /></span></Prop> : null })()}
                   <Prop label={L('status')}><StatusChip item={item} statusById={statusById} statuses={board.statuses} onChange={update} /></Prop>
                   <Prop label={L('assignee')}><AssigneeChip item={item} users={users} onChange={update} showName /></Prop>
                   <Prop label={L('priority')}><PriorityChip item={item} onChange={update} /></Prop>
-                  <Prop label={L('duty')}><DutyChip item={item} index={dutyIndex} onChange={update} full /></Prop>
                   {!item.parentId && <Prop label={L('group')}><GroupChip groups={board.groups} value={item.groupId} onChange={(id) => update({ groupId: id })} /></Prop>}
                   <Prop label={L('start')}><DateChip value={item.startDate} label={L('start')} onChange={(v) => update({ startDate: v })} /></Prop>
                   <Prop label={L('due')}><DateChip value={item.dueDate} label={L('due')} overdue={isOverdue(item, statusById[item.statusId])} onChange={(v) => update({ dueDate: v })} /></Prop>
@@ -397,7 +402,7 @@ function CommentBox({ itemId, parentId, users, mentionNames, toast, onPosted, st
   return (
     <div className="comment-box">
       <MarkdownEditor value={text} onChange={setText} rows={3} users={users} mentionNames={mentionNames} autoFocus
-        placeholder="댓글을 입력하세요. @아이디로 언급할 수 있습니다."
+        placeholder="댓글을 입력하세요. @이름으로 언급할 수 있습니다."
         onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit() }} />
       <div className="form-actions">
         <span className="hint grow">Ctrl+Enter 로 등록</span>

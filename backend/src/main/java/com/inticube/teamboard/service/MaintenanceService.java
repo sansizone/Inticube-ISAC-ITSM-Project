@@ -248,8 +248,13 @@ public class MaintenanceService {
     }
 
     // ---------- SLA 알림: 매 30분, 처리 목표 2시간 전·초과 시 담당자(없으면 등록자)에게 1회 ----------
+    /** SLA 는 화면에서 제거됨 — 알림도 기본 꺼짐 (다시 쓰려면 teamboard.sla-enabled: true) */
+    @org.springframework.beans.factory.annotation.Value("${teamboard.sla-enabled:false}")
+    private boolean slaEnabled;
+
     @Scheduled(cron = "${teamboard.sla-check-cron:0 */30 * * * *}")
     public void batchSlaCheck() {
+        if (!slaEnabled) return;
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime since = now.minusHours(20);
         int count = 0;

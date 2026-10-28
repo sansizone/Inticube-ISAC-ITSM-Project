@@ -171,7 +171,7 @@ function RailUser() {
 
 /** 패널 워크스페이스 한 줄: 마크·이름·잠금·진행률, 마우스를 올리면 위/아래 이동·즐겨찾기 별 */
 function BoardRow({ b, route, onMove, first, last }) {
-  const pct = b.itemCount ? Math.floor((b.doneCount / b.itemCount) * 100) : null
+  const pct = b.showProgress !== false && b.itemCount ? Math.floor((b.doneCount / b.itemCount) * 100) : null
   const mv = (dir) => (e) => { e.preventDefault(); e.stopPropagation(); onMove(b, dir) }
   return (
     <a href={`#/board/${b.id}`} className={`side-item side-board ${route.boardId === b.id ? 'active' : ''}`} title={b.description || b.name}>

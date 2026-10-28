@@ -75,10 +75,7 @@ export default function PostEditor({ postId, params }) {
   return (
     <>
       <PageHeader crumbs={[{ label: '게시판', href: '#/posts' }, ...(cat ? [{ label: cat.name, href: `#/posts?cat=${cat.id}` }] : [])]} title={postId ? '글 수정' : '새 글'} icon="edit" subtitle="마크다운으로 작성하고 파일을 첨부할 수 있습니다. Ctrl+Enter 로 저장"
-        actions={<>
-          <button className="btn btn-white btn-sm" onClick={cancel}>취소</button>
-          <button className="btn btn-white btn-sm btn-strong" onClick={save} disabled={busy}>{busy ? '저장 중…' : postId ? '수정 완료' : '등록'}</button>
-        </>} />
+ />
       <div className="page page-editor"><div className="card"><div className="card-body">
         <div className="editor-meta">
           <select className="input input-sm" value={f.categoryId || ''} onChange={(e) => set({ categoryId: Number(e.target.value) })} aria-label="게시판">
@@ -114,6 +111,11 @@ export default function PostEditor({ postId, params }) {
           )}
           {existing.length + pending.length === 0 && <div className="drop-hint">파일을 여기로 끌어다 놓으세요 (파일당 최대 50MB)</div>}
         </section>
+        {/* 저장·취소는 상단바가 아니라 작성 영역 아래에 */}
+        <div className="form-actions editor-actions">
+          <button className="btn" onClick={cancel}>취소</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? '저장 중…' : postId ? '수정 완료' : '등록'}</button>
+        </div>
       </div></div></div>
       {confirmDialog}
     </>
