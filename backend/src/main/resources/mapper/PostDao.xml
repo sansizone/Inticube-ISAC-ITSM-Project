@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  게시판
+  - 카테고리  TB_POST_CATEGORY   : 공지사항·자유게시판 … (admin_only_write = 관리자만 글쓰기)
+  - 게시글    TB_POST            : 본문(content)은 상세에서만 읽고, 목록은 postBrief 로 가볍게
+                                   search_text 는 본문 앞부분을 소문자로 정리해 둔 검색용 컬럼
+  - 댓글      TB_POST_COMMENT    : parent_id 가 있으면 답글. 답글 달린 원 댓글은 삭제 대신 is_deleted=true
+  - 첨부      TB_POST_ATTACHMENT : 파일 본체는 디스크(stored_name)
+-->
+<mapper namespace="com.inticube.teamboard.dao.PostDao">
+
+  <!-- ===================================================================
+       카테고리
+       =================================================================== -->
+
+  <resultMap id="category" type="PostCategory">
+    <id     property="id"             column="id"/>
+    <result property="name"           column="category_name"/>
+    <result property="description"    column="description"/>
+    <result property="sortOrder"      column="sort_order"/>
+    <result property="adminOnlyWrite" column="admin_only_write"/>
+    <result property="createdAt"      column="created_at"/>
+  </resultMap>
+
+  <!-- 카테고리 컬럼: 테이블 별칭 c 를 그대로 (자기 테이블 조회용) -->
+  <sql id="categoryCols">
+    c.id,
+    c.category_name,
+    c.description,
+    c.sort_order,
+    c.admin_only_write,
+    c.created_at
+  </sql>
+
+  <!-- 카테고리 컬럼: 테이블 별칭 c → 결과 컬럼 접두어 c_ (조인용) -->
+  <sql id="categoryCols_c">
+    c.id               as c_id,
+    c.category_name    as c_category_name,
+    c.description      as c_description,
+    c.sort_order       as c_sort_order,
+    c.admin_only_write as c_admin_only_write,
+    c.created_at       as c_created_at
+  </sql>
+
+  <!-- 카테고리 전체 (사이드바 순서) -->
+  <select id="selectCategories" resultMap="category">
+    SELECT <include refid="categoryCols"/>
+      FROM tb_post_category c
+     ORDER BY c.sort_order, c.id
+  </select>
+
+  <!-- 카테고리 한 건 -->
+  <select id="selectCategoryById" resultMap="category">
+    SELECT <include refid="categoryCols"/>
+      FROM tb_post_category c
+     WHERE c.id = #{id}
+  </select>
+
+  <!-- 카테고리 수 (0 이면 최초 기동 → 기본 게시판 생성) -->
+  <select id="selectCategoryCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_post_category
+  </select>
+
+  <!-- 마지막 정렬 번호 -->
+  <select id="selectCategoryMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_post_category
+  </select>
+
+  <!-- 카테고리 추가 -->
+  <insert id="insertCategory" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_post_category (category_name, description, sort_order, admin_only_write, created_at)
+    VALUES (#{name}, #{description}, #{sortOrder}, #{adminOnlyWrite}, #{createdAt})
+  </insert>
+
+  <!-- 카테고리 수정 (순서 변경 포함) -->
+  <update id="updateCategory">
+    UPDATE tb_post_category
+       SET category_name    = #{name},
+           description      = #{description},
+           sort_order       = #{sortOrder},
+           admin_only_write = #{adminOnlyWrite}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 카테고리 삭제 (글이 남아 있으면 서비스에서 거부) -->
+  <delete id="deleteCategory">
+    DELETE FROM tb_post_category
+     WHERE id = #{id}
+  </delete>
+
+  <!-- ===================================================================
+       게시글
+       =================================================================== -->
+
+  <!-- 목록용 (본문 제외) -->
+  <resultMap id="postBrief" type="Post">
+    <id     property="id"         column="id"/>
+    <result property="title"      column="title"/>
+    <result property="searchText" column="search_text"/>
+    <result property="pinned"     column="is_pinned"/>
+    <result property="viewCount"  column="view_count"/>
+    <result property="createdAt"  column="created_at"/>
+    <result property="updatedAt"  column="updated_at"/>
+    <association property="category" resultMap="category" columnPrefix="c_"/>
+    <association property="author"   resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="au_"/>
+  </resultMap>
+
+  <!-- 상세용 (본문 포함) -->
+  <resultMap id="post" type="Post" extends="postBrief">
+    <result property="content" column="content"/>
+  </resultMap>
+
+  <!-- 게시글 + 카테고리(c_) + 작성자(au_) -->
+  <sql id="postBriefCols">
+    p.id, p.title, p.search_text, p.is_pinned, p.view_count, p.created_at, p.updated_at,
+    <include refid="categoryCols_c"/>,
+    <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>
+  </sql>
+
+  <sql id="postFrom">
+      FROM tb_post p
+      JOIN tb_post_category c  ON c.id  = p.category_id
+      JOIN tb_app_user      au ON au.id = p.author_id
+  </sql>
+
+  <!-- 목록·검색 조건: categoryId 없으면 전체, q 는 소문자 '%검색어%' (제목·본문 앞부분·작성자 이름) -->
+  <sql id="searchWhere">
+    <where>
+      <if test="categoryId != null">
+        p.category_id = #{categoryId}
+      </if>
+      <if test="excludePinned">
+        AND p.is_pinned = false
+      </if>
+      <if test="q != null">
+        AND (LOWER(p.title) LIKE #{q} OR p.search_text LIKE #{q} OR LOWER(au.display_name) LIKE #{q})
+      </if>
+    </where>
+  </sql>
+
+  <!-- 게시글 상세 (본문 포함) -->
+  <select id="selectPostById" resultMap="post">
+    SELECT <include refid="postBriefCols"/>, p.content
+    <include refid="postFrom"/>
+     WHERE p.id = #{id}
+  </select>
+
+  <!-- 게시글 목록 한 페이지, 최신순 (검색이 아닐 때는 상단 고정글 제외) -->
+  <select id="selectPosts" resultMap="postBrief">
+    SELECT <include refid="postBriefCols"/>
+    <include refid="postFrom"/>
+    <include refid="searchWhere"/>
+     ORDER BY p.created_at DESC, p.id DESC
+    OFFSET #{offset} ROWS FETCH FIRST #{limit} ROWS ONLY
+  </select>
+
+  <!-- 목록 조건과 같은 전체 건수 (페이지 수 계산) -->
+  <select id="selectPostCount" resultType="long">
+    SELECT COUNT(*)
+    <include refid="postFrom"/>
+    <include refid="searchWhere"/>
+  </select>
+
+  <!-- 상단 고정글 (categoryId 없으면 전체) -->
+  <select id="selectPinned" resultMap="postBrief">
+    SELECT <include refid="postBriefCols"/>
+    <include refid="postFrom"/>
+     WHERE p.is_pinned = true
+    <if test="categoryId != null">
+       AND p.category_id = #{categoryId}
+    </if>
+     ORDER BY p.created_at DESC
+  </select>
+
+  <!-- 카테고리별 글 수 (category_id, cnt) — 사이드바 표시 -->
+  <select id="selectCountByCategory" resultType="map">
+    SELECT category_id, COUNT(*) AS cnt
+      FROM tb_post
+     GROUP BY category_id
+  </select>
+
+  <!-- 특정 카테고리 글 수 (삭제 가능 여부) -->
+  <select id="selectCountInCategory" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_post
+     WHERE category_id = #{categoryId}
+  </select>
+
+  <!-- 같은 카테고리의 이전 글 (id 작은 쪽) -->
+  <select id="selectPrev" resultMap="postBrief">
+    SELECT <include refid="postBriefCols"/>
+    <include refid="postFrom"/>
+     WHERE p.category_id = #{categoryId}
+       AND p.id &lt; #{id}
+     ORDER BY p.id DESC
+     FETCH FIRST 1 ROWS ONLY
+  </select>
+
+  <!-- 같은 카테고리의 다음 글 (id 큰 쪽) -->
+  <select id="selectNext" resultMap="postBrief">
+    SELECT <include refid="postBriefCols"/>
+    <include refid="postFrom"/>
+     WHERE p.category_id = #{categoryId}
+       AND p.id &gt; #{id}
+     ORDER BY p.id ASC
+     FETCH FIRST 1 ROWS ONLY
+  </select>
+
+  <!-- 게시글 작성 -->
+  <insert id="insertPost" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_post (
+           category_id, title, content, search_text, author_id, is_pinned, view_count, created_at, updated_at
+    ) VALUES (
+           #{category.id}, #{title}, #{content}, #{searchText}, #{author.id}, #{pinned}, #{viewCount}, #{createdAt}, #{updatedAt}
+    )
+  </insert>
+
+  <!-- 게시글 수정 (작성자·조회수·작성일은 유지) -->
+  <update id="updatePost">
+    UPDATE tb_post
+       SET category_id = #{category.id},
+           title       = #{title},
+           content     = #{content},
+           search_text = #{searchText},
+           is_pinned   = #{pinned},
+           updated_at  = #{updatedAt}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 조회수 +1 -->
+  <update id="updateViewCount">
+    UPDATE tb_post
+       SET view_count = view_count + 1
+     WHERE id = #{id}
+  </update>
+
+  <!-- 게시글 삭제 (댓글·첨부·알림은 서비스에서 먼저 삭제) -->
+  <delete id="deletePost">
+    DELETE FROM tb_post
+     WHERE id = #{id}
+  </delete>
+
+  <!-- ===================================================================
+       댓글
+       =================================================================== -->
+
+  <resultMap id="comment" type="PostComment">
+    <id     property="id"        column="id"/>
+    <result property="parentId"  column="parent_id"/>
+    <result property="content"   column="content"/>
+    <result property="deleted"   column="is_deleted"/>
+    <result property="createdAt" column="created_at"/>
+    <association property="post" javaType="Post">
+      <id property="id" column="post_id"/>
+    </association>
+    <association property="author" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="au_"/>
+  </resultMap>
+
+  <sql id="commentSelect">
+    SELECT c.id, c.post_id, c.parent_id, c.content, c.is_deleted, c.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>
+      FROM tb_post_comment c
+      JOIN tb_app_user au ON au.id = c.author_id
+  </sql>
+
+  <!-- 댓글 한 건 (답글 대상 확인·삭제 권한 검사) -->
+  <select id="selectCommentById" resultMap="comment">
+    <include refid="commentSelect"/>
+     WHERE c.id = #{id}
+  </select>
+
+  <!-- 게시글의 댓글 전체, 작성순 (답글 묶기는 화면에서) -->
+  <select id="selectCommentsByPost" resultMap="comment">
+    <include refid="commentSelect"/>
+     WHERE c.post_id = #{postId}
+     ORDER BY c.created_at, c.id
+  </select>
+
+  <!-- 살아 있는 답글이 있는지 (있으면 원 댓글은 soft delete) -->
+  <select id="selectReplyExists" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_post_comment
+     WHERE parent_id  = #{parentId}
+       AND is_deleted = false
+  </select>
+
+  <!-- 게시글별 댓글 수 (post_id, cnt) — 삭제된 댓글 제외 -->
+  <select id="selectCommentCountByPosts" resultType="map">
+    SELECT post_id, COUNT(*) AS cnt
+      FROM tb_post_comment
+     WHERE is_deleted = false
+       AND post_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+     GROUP BY post_id
+  </select>
+
+  <!-- 댓글·답글 작성 -->
+  <insert id="insertComment" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_post_comment (post_id, parent_id, author_id, content, is_deleted, created_at)
+    VALUES (#{post.id}, #{parentId}, #{author.id}, #{content}, #{deleted}, #{createdAt})
+  </insert>
+
+  <!-- 댓글 내용·삭제 표시 갱신 (soft delete 시 content 비움) -->
+  <update id="updateComment">
+    UPDATE tb_post_comment
+       SET content    = #{content},
+           is_deleted = #{deleted}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 댓글 삭제 (답글 없는 경우) -->
+  <delete id="deleteComment">
+    DELETE FROM tb_post_comment
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 게시글 삭제 시 댓글 전체 삭제 -->
+  <delete id="deleteCommentsByPost">
+    DELETE FROM tb_post_comment
+     WHERE post_id = #{postId}
+  </delete>
+
+  <!-- ===================================================================
+       게시글 첨부
+       =================================================================== -->
+
+  <resultMap id="pattachment" type="PostAttachment">
+    <id     property="id"           column="id"/>
+    <result property="originalName" column="original_name"/>
+    <result property="contentType"  column="content_type"/>
+    <result property="fileSize"     column="file_size"/>
+    <result property="storedName"   column="stored_name"/>
+    <result property="createdAt"    column="created_at"/>
+    <association property="post" javaType="Post">
+      <id property="id" column="post_id"/>
+    </association>
+    <association property="uploader" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="up_"/>
+  </resultMap>
+
+  <sql id="pattachSelect">
+    SELECT a.id, a.post_id, a.original_name, a.content_type, a.file_size, a.stored_name, a.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_up"/>
+      FROM tb_post_attachment a
+      JOIN tb_app_user up ON up.id = a.uploader_id
+  </sql>
+
+  <!-- 첨부 한 건 (다운로드·삭제). post 는 id 만 채워짐 -->
+  <select id="selectAttachmentById" resultMap="pattachment">
+    <include refid="pattachSelect"/>
+     WHERE a.id = #{id}
+  </select>
+
+  <!-- 게시글의 첨부 목록, 올린 순 -->
+  <select id="selectAttachmentsByPost" resultMap="pattachment">
+    <include refid="pattachSelect"/>
+     WHERE a.post_id = #{postId}
+     ORDER BY a.created_at, a.id
+  </select>
+
+  <!-- 게시글별 첨부 수 (post_id, cnt) -->
+  <select id="selectAttachmentCountByPosts" resultType="map">
+    SELECT post_id, COUNT(*) AS cnt
+      FROM tb_post_attachment
+     WHERE post_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+     GROUP BY post_id
+  </select>
+
+  <!-- 첨부 메타 등록 -->
+  <insert id="insertAttachment" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_post_attachment (
+           post_id, original_name, content_type, file_size, stored_name, uploader_id, created_at
+    ) VALUES (
+           #{post.id}, #{originalName}, #{contentType}, #{fileSize}, #{storedName}, #{uploader.id}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 첨부 한 건 삭제 -->
+  <delete id="deleteAttachment">
+    DELETE FROM tb_post_attachment
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 게시글 삭제 시 첨부 전체 삭제 -->
+  <delete id="deleteAttachmentsByPost">
+    DELETE FROM tb_post_attachment
+     WHERE post_id = #{postId}
+  </delete>
+
+</mapper>

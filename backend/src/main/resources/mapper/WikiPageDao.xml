@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  위키 페이지 (TB_WIKI_PAGE)
+  - 워크스페이스별 마크다운 페이지, parent_id 로 트리 구성
+  - 목록 조회는 본문(content)을 내려받지 않도록 pageSelectBrief(content 자리에 NULL) 를 쓴다
+-->
+<mapper namespace="com.inticube.teamboard.dao.WikiPageDao">
+
+  <resultMap id="page" type="WikiPage">
+    <id     property="id"        column="id"/>
+    <result property="boardId"   column="board_id"/>
+    <result property="parentId"  column="parent_id"/>
+    <result property="title"     column="title"/>
+    <result property="content"   column="content"/>
+    <result property="sortOrder" column="sort_order"/>
+    <result property="createdAt" column="created_at"/>
+    <result property="updatedAt" column="updated_at"/>
+    <association property="createdBy" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="cb_" notNullColumn="id"/>
+    <association property="updatedBy" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="ub_" notNullColumn="id"/>
+  </resultMap>
+
+  <!-- 페이지 + 만든 사람(cb_)·마지막 수정자(ub_) 조인. 본문(content) 포함 -->
+  <sql id="pageSelect">
+    SELECT w.id, w.board_id, w.parent_id, w.title,
+           w.content,
+           w.sort_order, w.created_at, w.updated_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_cb"/>,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_ub"/>
+      FROM tb_wiki_page w
+      LEFT JOIN tb_app_user cb ON cb.id = w.created_by
+      LEFT JOIN tb_app_user ub ON ub.id = w.updated_by
+  </sql>
+
+  <!-- 같은 조인, 목록용 — 본문은 NULL 로 내려 전송량을 줄임 -->
+  <sql id="pageSelectBrief">
+    SELECT w.id, w.board_id, w.parent_id, w.title,
+           NULL AS content,
+           w.sort_order, w.created_at, w.updated_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_cb"/>,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_ub"/>
+      FROM tb_wiki_page w
+      LEFT JOIN tb_app_user cb ON cb.id = w.created_by
+      LEFT JOIN tb_app_user ub ON ub.id = w.updated_by
+  </sql>
+
+  <!-- ===================================================================
+       조회
+       =================================================================== -->
+
+  <!-- 페이지 한 건 (본문 포함) -->
+  <select id="selectById" resultMap="page">
+    <include refid="pageSelect"/>
+     WHERE w.id = #{id}
+  </select>
+
+  <!-- 워크스페이스의 페이지 목록 (본문 제외, 트리 정렬은 서비스에서) -->
+  <select id="selectByBoard" resultMap="page">
+    <include refid="pageSelectBrief"/>
+     WHERE w.board_id = #{boardId}
+     ORDER BY w.sort_order, w.id
+  </select>
+
+  <!-- 특정 페이지의 바로 아래 하위 페이지 (삭제 시 한 단계 위로 올리기) -->
+  <select id="selectByParent" resultMap="page">
+    <include refid="pageSelectBrief"/>
+     WHERE w.parent_id = #{parentId}
+  </select>
+
+  <!-- 워크스페이스의 페이지 수 (500개 제한 검사) -->
+  <select id="selectCountByBoard" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_wiki_page
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 마지막 정렬 번호 (새 페이지는 끝에 추가) -->
+  <select id="selectMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_wiki_page
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- ===================================================================
+       변경
+       =================================================================== -->
+
+  <!-- 페이지 생성 -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_wiki_page (
+           board_id, parent_id, title, content, sort_order,
+           created_by, updated_by, created_at, updated_at
+    ) VALUES (
+           #{boardId}, #{parentId}, #{title}, #{content}, #{sortOrder},
+           #{createdBy.id}, #{updatedBy.id}, #{createdAt}, #{updatedAt}
+    )
+  </insert>
+
+  <!-- 제목·본문·위치 수정 -->
+  <update id="update">
+    UPDATE tb_wiki_page
+       SET parent_id  = #{parentId},
+           title      = #{title},
+           content    = #{content},
+           sort_order = #{sortOrder},
+           updated_by = #{updatedBy.id},
+           updated_at = #{updatedAt}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 상위 페이지만 변경 (부모 삭제 시 하위를 한 단계 위로) -->
+  <update id="updateParent">
+    UPDATE tb_wiki_page
+       SET parent_id = #{parentId}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 정렬 순서만 변경 (드래그 정렬) -->
+  <update id="updateSort">
+    UPDATE tb_wiki_page
+       SET sort_order = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 페이지 삭제 -->
+  <delete id="delete">
+    DELETE FROM tb_wiki_page
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 전체 삭제 -->
+  <delete id="deleteByBoard">
+    DELETE FROM tb_wiki_page
+     WHERE board_id = #{boardId}
+  </delete>
+
+</mapper>

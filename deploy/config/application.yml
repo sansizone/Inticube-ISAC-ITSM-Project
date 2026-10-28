@@ -1,0 +1,18 @@
+# =====================================================================
+# ISAC-PROJECT DB(PostgreSQL) 설정 — jar 내부 기본값을 덮어쓸 때만 수정
+#  - isac-project.jar 와 같은 폴더의 config/ 안에 두면 자동으로 읽힙니다.
+#  - 비밀번호는 파일에 적지 말고 실행 시 입력하거나 환경변수 DB_PASSWORD 로 넘기세요.
+# =====================================================================
+spring:
+  datasource:
+    # 별도 스키마를 쓰는 경우 url 끝 currentSchema 로 지정 (테이블은 deploy/postgres-teamboard-schema.sql 로 생성)
+    url: jdbc:postgresql://10.1.15.181:5432/isacdb?currentSchema=teamboard
+    username: isac
+    password: ${DB_PASSWORD:}
+
+teamboard:
+  # 2단계 인증(OTP 앱) 강제: 전체 / 관리자만
+  mfa-required: false
+  mfa-required-for-admin: false
+  # 첨부파일 저장 경로 (디스크 저장 → 백업 대상)
+  upload-dir: ./data/uploads

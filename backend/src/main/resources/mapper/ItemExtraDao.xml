@@ -1,0 +1,417 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  업무 부속 데이터
+  - 업데이트   TB_ITEM_UPDATE  : 댓글(is_system=false) + 시스템 활동 기록(is_system=true). parent_id 는 답글의 원 댓글
+  - 첨부파일   TB_ATTACHMENT   : 파일 본체는 디스크(stored_name), 여기엔 메타만
+  - 관계       TB_ITEM_LINK    : from → to 방향 (BLOCKS / RELATES / DUPLICATES / CAUSES)
+  - 감시자     TB_ITEM_WATCHER : 상태·담당자·댓글 변경 알림을 받을 사용자
+  - 시간 기록  TB_TIME_ENTRY   : 업무별 작업 시간 (board_id 는 집계용 복제 컬럼)
+
+  댓글·첨부는 권한 검사를 위해 소속 업무 → 워크스페이스(i_b_ 접두어)까지 함께 읽는다.
+-->
+<mapper namespace="com.inticube.teamboard.dao.ItemExtraDao">
+
+  <!-- ===================================================================
+       공통 조각: 업무 요약 (id·이름·번호 + 워크스페이스)
+       =================================================================== -->
+
+  <resultMap id="itemRef" type="Item">
+    <id     property="id"     column="id"/>
+    <result property="name"   column="item_name"/>
+    <result property="keyNum" column="key_num"/>
+    <association property="board" resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief" columnPrefix="b_"/>
+  </resultMap>
+
+  <!-- i = tb_item, b = tb_board 별칭을 전제로 함 -->
+  <sql id="itemRefCols">
+    i.id AS i_id, i.item_name AS i_item_name, i.key_num AS i_key_num,
+    <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_i_b"/>
+  </sql>
+
+  <!-- ===================================================================
+       업데이트 (댓글·활동 기록)
+       =================================================================== -->
+
+  <resultMap id="update" type="ItemUpdate">
+    <id     property="id"         column="id"/>
+    <result property="content"    column="content"/>
+    <result property="parentId"   column="parent_id"/>
+    <result property="authorName" column="author_name"/>
+    <result property="externalId" column="external_id"/>
+    <result property="system"     column="is_system"/>
+    <result property="createdAt"  column="created_at"/>
+    <association property="author" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="au_"/>
+    <association property="item"   resultMap="itemRef" columnPrefix="i_"/>
+  </resultMap>
+
+  <sql id="updateSelect">
+    SELECT u.id, u.content, u.parent_id, u.author_name, u.external_id, u.is_system, u.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>,
+           <include refid="itemRefCols"/>
+      FROM tb_item_update u
+      JOIN tb_app_user au ON au.id = u.author_id
+      JOIN tb_item     i  ON i.id  = u.item_id
+      JOIN tb_board    b  ON b.id  = i.board_id
+  </sql>
+
+  <!-- 업데이트 한 건 (답글 대상 확인·삭제 권한 검사) -->
+  <select id="selectUpdateById" resultMap="update">
+    <include refid="updateSelect"/>
+     WHERE u.id = #{id}
+  </select>
+
+  <!-- 업무의 업데이트 전체, 최신순 (상세 화면) -->
+  <select id="selectUpdatesByItem" resultMap="update">
+    <include refid="updateSelect"/>
+     WHERE u.item_id = #{itemId}
+     ORDER BY u.created_at DESC, u.id DESC
+  </select>
+
+  <!-- 원 댓글의 답글들 -->
+  <select id="selectUpdatesByParent" resultMap="update">
+    <include refid="updateSelect"/>
+     WHERE u.parent_id = #{parentId}
+  </select>
+
+  <!-- 워크스페이스 업무별 댓글 수 (item_id, cnt) — 활동 기록 제외 -->
+  <select id="selectCommentCountByBoard" resultType="map">
+    SELECT u.item_id, COUNT(*) AS cnt
+      FROM tb_item_update u
+      JOIN tb_item i ON i.id = u.item_id
+     WHERE u.is_system = false
+       AND i.board_id  = #{boardId}
+     GROUP BY u.item_id
+  </select>
+
+  <!-- 외부 ID 가 있는 업데이트 (id, external_id) — 가져온 댓글의 답글 연결용 -->
+  <select id="selectUpdateIdByExternal" resultType="map">
+    SELECT id, external_id
+      FROM tb_item_update
+     WHERE external_id IS NOT NULL
+       AND item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 댓글·활동 기록 추가 -->
+  <insert id="insertUpdate" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_item_update (
+           item_id, author_id, content, parent_id, author_name, external_id, is_system, created_at
+    ) VALUES (
+           #{item.id}, #{author.id}, #{content}, #{parentId}, #{authorName}, #{externalId}, #{system}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 댓글 일괄 추가 (데이터 가져오기) -->
+  <insert id="batchInsertUpdates">
+    INSERT INTO tb_item_update (
+           item_id, author_id, content, parent_id, author_name, external_id, is_system, created_at
+    ) VALUES
+    <foreach collection="list" item="u" separator=",">
+      (#{u.item.id}, #{u.author.id}, #{u.content}, #{u.parentId}, #{u.authorName}, #{u.externalId}, #{u.system}, #{u.createdAt})
+    </foreach>
+  </insert>
+
+  <!-- 답글의 원 댓글 연결 변경 -->
+  <update id="updateParent">
+    UPDATE tb_item_update
+       SET parent_id = #{parentId}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 댓글 한 건 삭제 -->
+  <delete id="deleteUpdate">
+    DELETE FROM tb_item_update
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 원 댓글 삭제 시 답글 먼저 삭제 -->
+  <delete id="deleteUpdatesByParent">
+    DELETE FROM tb_item_update
+     WHERE parent_id = #{parentId}
+  </delete>
+
+  <!-- 업무 삭제 시 업데이트 전체 삭제 -->
+  <delete id="deleteUpdatesByItems">
+    DELETE FROM tb_item_update
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- ===================================================================
+       첨부파일
+       =================================================================== -->
+
+  <resultMap id="attachment" type="Attachment">
+    <id     property="id"           column="id"/>
+    <result property="originalName" column="original_name"/>
+    <result property="contentType"  column="content_type"/>
+    <result property="fileSize"     column="file_size"/>
+    <result property="storedName"   column="stored_name"/>
+    <result property="createdAt"    column="created_at"/>
+    <association property="uploader" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="up_"/>
+    <association property="item"     resultMap="itemRef" columnPrefix="i_"/>
+  </resultMap>
+
+  <sql id="attachmentSelect">
+    SELECT a.id, a.original_name, a.content_type, a.file_size, a.stored_name, a.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_up"/>,
+           <include refid="itemRefCols"/>
+      FROM tb_attachment a
+      JOIN tb_app_user up ON up.id = a.uploader_id
+      JOIN tb_item     i  ON i.id  = a.item_id
+      JOIN tb_board    b  ON b.id  = i.board_id
+  </sql>
+
+  <!-- 첨부 한 건 (다운로드·삭제) -->
+  <select id="selectAttachmentById" resultMap="attachment">
+    <include refid="attachmentSelect"/>
+     WHERE a.id = #{id}
+  </select>
+
+  <!-- 업무의 첨부 목록, 최신순 -->
+  <select id="selectAttachmentsByItem" resultMap="attachment">
+    <include refid="attachmentSelect"/>
+     WHERE a.item_id = #{itemId}
+     ORDER BY a.created_at DESC, a.id DESC
+  </select>
+
+  <!-- 여러 업무의 첨부 (삭제 시 디스크 파일 정리용) -->
+  <select id="selectAttachmentsByItems" resultMap="attachment">
+    <include refid="attachmentSelect"/>
+     WHERE a.item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 워크스페이스 업무별 첨부 수 (item_id, cnt) -->
+  <select id="selectFileCountByBoard" resultType="map">
+    SELECT a.item_id, COUNT(*) AS cnt
+      FROM tb_attachment a
+      JOIN tb_item i ON i.id = a.item_id
+     WHERE i.board_id = #{boardId}
+     GROUP BY a.item_id
+  </select>
+
+  <!-- 첨부 메타 등록 (파일은 FileStorageService 가 먼저 저장) -->
+  <insert id="insertAttachment" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_attachment (
+           item_id, original_name, content_type, file_size, stored_name, uploader_id, created_at
+    ) VALUES (
+           #{item.id}, #{originalName}, #{contentType}, #{fileSize}, #{storedName}, #{uploader.id}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 첨부 한 건 삭제 -->
+  <delete id="deleteAttachment">
+    DELETE FROM tb_attachment
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 업무 삭제 시 첨부 전체 삭제 -->
+  <delete id="deleteAttachmentsByItems">
+    DELETE FROM tb_attachment
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- ===================================================================
+       관계 (업무 ↔ 업무)
+       =================================================================== -->
+
+  <resultMap id="link" type="ItemLink">
+    <id     property="id"         column="id"/>
+    <result property="fromItemId" column="from_item_id"/>
+    <result property="toItemId"   column="to_item_id"/>
+    <result property="type"       column="link_type"/>
+    <result property="createdBy"  column="created_by"/>
+  </resultMap>
+
+  <sql id="linkSelect">
+    SELECT id, from_item_id, to_item_id, link_type, created_by
+      FROM tb_item_link
+  </sql>
+
+  <!-- 관계 한 건 (삭제 권한 검사) -->
+  <select id="selectLinkById" resultMap="link">
+    <include refid="linkSelect"/>
+     WHERE id = #{id}
+  </select>
+
+  <!-- 업무가 어느 쪽이든 걸린 관계 전체 -->
+  <select id="selectLinksByItem" resultMap="link">
+    <include refid="linkSelect"/>
+     WHERE from_item_id = #{itemId}
+        OR to_item_id   = #{itemId}
+     ORDER BY id
+  </select>
+
+  <!-- 워크스페이스 업무가 걸린 관계 전체 (워크스페이스 화면의 차단 표시) -->
+  <select id="selectLinksByBoard" resultMap="link">
+    <include refid="linkSelect"/>
+     WHERE from_item_id IN (SELECT id FROM tb_item WHERE board_id = #{boardId})
+        OR to_item_id   IN (SELECT id FROM tb_item WHERE board_id = #{boardId})
+  </select>
+
+  <!-- 같은 방향·유형의 관계가 이미 있는지 -->
+  <select id="selectLinkExists" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_item_link
+     WHERE from_item_id = #{fromId}
+       AND to_item_id   = #{toId}
+       AND link_type    = #{type}
+  </select>
+
+  <!-- 관계 추가 -->
+  <insert id="insertLink" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_item_link (from_item_id, to_item_id, link_type, created_by)
+    VALUES (#{fromItemId}, #{toItemId}, #{type}, #{createdBy})
+  </insert>
+
+  <!-- 관계 해제 -->
+  <delete id="deleteLink">
+    DELETE FROM tb_item_link
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 업무 삭제 시 양쪽 방향 관계 모두 삭제 -->
+  <delete id="deleteLinksByItems">
+    DELETE FROM tb_item_link
+     WHERE from_item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+        OR to_item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- ===================================================================
+       감시자
+       =================================================================== -->
+
+  <resultMap id="watcher" type="ItemWatcher">
+    <id     property="id"     column="id"/>
+    <result property="itemId" column="item_id"/>
+    <association property="user" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="u_"/>
+  </resultMap>
+
+  <sql id="watcherSelect">
+    SELECT w.id, w.item_id,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_u"/>
+      FROM tb_item_watcher w
+      JOIN tb_app_user u ON u.id = w.user_id
+  </sql>
+
+  <!-- 업무의 감시자 목록 (이름순) -->
+  <select id="selectWatchersByItem" resultMap="watcher">
+    <include refid="watcherSelect"/>
+     WHERE w.item_id = #{itemId}
+     ORDER BY u.display_name
+  </select>
+
+  <!-- 감시 중인지 -->
+  <select id="selectWatcherExists" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_item_watcher
+     WHERE item_id = #{itemId}
+       AND user_id = #{userId}
+  </select>
+
+  <!-- 사용자가 감시 중인 업무 ID 전체 (목록 화면 표시) -->
+  <select id="selectWatchingItemIds" resultType="long">
+    SELECT item_id
+      FROM tb_item_watcher
+     WHERE user_id = #{userId}
+  </select>
+
+  <!-- 감시 시작 (중복 여부는 서비스에서 먼저 확인) -->
+  <insert id="insertWatcher">
+    INSERT INTO tb_item_watcher (item_id, user_id)
+    VALUES (#{itemId}, #{userId})
+  </insert>
+
+  <!-- 감시 해제 -->
+  <delete id="deleteWatcher">
+    DELETE FROM tb_item_watcher
+     WHERE item_id = #{itemId}
+       AND user_id = #{userId}
+  </delete>
+
+  <!-- 업무 삭제 시 감시자 전체 삭제 -->
+  <delete id="deleteWatchersByItems">
+    DELETE FROM tb_item_watcher
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- ===================================================================
+       시간 기록
+       =================================================================== -->
+
+  <resultMap id="time" type="TimeEntry">
+    <id     property="id"        column="id"/>
+    <result property="itemId"    column="item_id"/>
+    <result property="boardId"   column="board_id"/>
+    <result property="workDate"  column="work_date"/>
+    <result property="hours"     column="hours"/>
+    <result property="comment"   column="comment_text"/>
+    <result property="createdAt" column="created_at"/>
+    <association property="user" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="u_"/>
+  </resultMap>
+
+  <sql id="timeSelect">
+    SELECT t.id, t.item_id, t.board_id, t.work_date, t.hours, t.comment_text, t.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_u"/>
+      FROM tb_time_entry t
+      JOIN tb_app_user u ON u.id = t.user_id
+  </sql>
+
+  <!-- 시간 기록 한 건 (등록 직후 반환·삭제 권한 검사) -->
+  <select id="selectTimeById" resultMap="time">
+    <include refid="timeSelect"/>
+     WHERE t.id = #{id}
+  </select>
+
+  <!-- 업무의 시간 기록, 작업일 최신순 -->
+  <select id="selectTimesByItem" resultMap="time">
+    <include refid="timeSelect"/>
+     WHERE t.item_id = #{itemId}
+     ORDER BY t.work_date DESC, t.id DESC
+  </select>
+
+  <!-- 워크스페이스 업무별 소요 시간 합계 (item_id, total) -->
+  <select id="selectTimeSumByBoard" resultType="map">
+    SELECT item_id, SUM(hours) AS total
+      FROM tb_time_entry
+     WHERE board_id = #{boardId}
+     GROUP BY item_id
+  </select>
+
+  <!-- 시간 기록 추가 -->
+  <insert id="insertTime" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_time_entry (
+           item_id, board_id, user_id, work_date, hours, comment_text, created_at
+    ) VALUES (
+           #{itemId}, #{boardId}, #{user.id}, #{workDate}, #{hours}, #{comment}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 업무를 다른 워크스페이스로 옮길 때 집계용 board_id 갱신 -->
+  <update id="updateTimeBoard">
+    UPDATE tb_time_entry
+       SET board_id = #{boardId}
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 시간 기록 삭제 -->
+  <delete id="deleteTime">
+    DELETE FROM tb_time_entry
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 업무 삭제 시 시간 기록 전체 삭제 -->
+  <delete id="deleteTimesByItems">
+    DELETE FROM tb_time_entry
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+</mapper>

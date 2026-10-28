@@ -1,0 +1,750 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  워크스페이스 구성 요소
+  - 그룹        TB_BOARD_GROUP   : 업무를 묶는 섹션
+  - 상태        TB_BOARD_STATUS  : 대기/진행중/완료 … (is_done = 완료 취급)
+  - 컬럼        TB_BOARD_COLUMN  : 사용자 정의 컬럼 (RELATION 은 ref_board_id/ref_column_id 로 다른 워크스페이스 참조)
+  - 유형        TB_BOARD_TYPE    : 요청/장애/변경 … + SLA 목표 시간
+  - 버전        TB_BOARD_VERSION : 버전·마일스톤 (로드맵)
+  - 보기 탭     TB_BOARD_VIEW    : 목록/표/칸반 … 탭과 필터·정렬 설정 JSON
+  - 멤버        TB_BOARD_MEMBER  : 비공개 워크스페이스 접근 권한 (OWNER / MEMBER)
+  - 즐겨찾기    TB_BOARD_FAVORITE: 사용자별 즐겨찾는 워크스페이스 (사이드바 상단 고정)
+
+  *Cols_<접두어> 조각은 다른 매퍼(ItemDao 등)가 조인할 때 재사용한다 (문자열 치환 없이 별칭·접두어를 고정해 SQL 인젝션 여지를 없앰).
+  *WithBoard 결과맵은 소속 워크스페이스 정보까지 필요한 권한 검사용이다.
+-->
+<mapper namespace="com.inticube.teamboard.dao.BoardPartsDao">
+
+  <!-- ===================================================================
+       그룹 (TB_BOARD_GROUP)
+       =================================================================== -->
+
+  <!-- 그룹 컬럼: 테이블 별칭 g 를 그대로 (자기 테이블 조회용) -->
+  <sql id="groupCols">
+    g.id,
+    g.group_name,
+    g.color,
+    g.sort_order,
+    g.board_id
+  </sql>
+
+  <!-- 그룹 컬럼: 테이블 별칭 g → 결과 컬럼 접두어 g_ (조인용) -->
+  <sql id="groupCols_g">
+    g.id         as g_id,
+    g.group_name as g_group_name,
+    g.color      as g_color,
+    g.sort_order as g_sort_order,
+    g.board_id   as g_board_id
+  </sql>
+
+  <resultMap id="group" type="BoardGroup">
+    <id     property="id"        column="id"/>
+    <result property="name"      column="group_name"/>
+    <result property="color"     column="color"/>
+    <result property="sortOrder" column="sort_order"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <resultMap id="groupWithBoard" type="BoardGroup">
+    <id     property="id"        column="id"/>
+    <result property="name"      column="group_name"/>
+    <result property="color"     column="color"/>
+    <result property="sortOrder" column="sort_order"/>
+    <association property="board" resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief" columnPrefix="b_"/>
+  </resultMap>
+
+  <!-- 워크스페이스의 그룹 목록 (정렬 순) -->
+  <select id="selectGroupsByBoard" resultMap="group">
+    SELECT <include refid="groupCols"/>
+      FROM tb_board_group g
+     WHERE g.board_id = #{boardId}
+     ORDER BY g.sort_order, g.id
+  </select>
+
+  <!-- 그룹 한 건 + 소속 워크스페이스 (업무 생성·접근 검사) -->
+  <select id="selectGroupById" resultMap="groupWithBoard">
+    SELECT <include refid="groupCols"/>,
+           <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_b"/>
+      FROM tb_board_group g
+      JOIN tb_board b ON b.id = g.board_id
+     WHERE g.id = #{id}
+  </select>
+
+  <!-- 마지막 정렬 번호 (새 그룹은 끝에) -->
+  <select id="selectGroupMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_board_group
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 그룹 추가 -->
+  <insert id="insertGroup" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_group (board_id, group_name, color, sort_order)
+    VALUES (#{board.id}, #{name}, #{color}, #{sortOrder})
+  </insert>
+
+  <!-- 그룹 이름·색·순서 수정 -->
+  <update id="updateGroup">
+    UPDATE tb_board_group
+       SET group_name = #{name},
+           color      = #{color},
+           sort_order = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 그룹 삭제 (안의 업무는 서비스에서 먼저 삭제) -->
+  <delete id="deleteGroup">
+    DELETE FROM tb_board_group
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제·엑셀 가져오기 초기화 시 그룹 전체 삭제 -->
+  <delete id="deleteGroupsByBoard">
+    DELETE FROM tb_board_group
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       상태 (TB_BOARD_STATUS)
+       =================================================================== -->
+
+  <!-- 상태 컬럼: 테이블 별칭 s 를 그대로 (자기 테이블 조회용) -->
+  <sql id="statusCols">
+    s.id,
+    s.label,
+    s.color,
+    s.sort_order,
+    s.is_done,
+    s.board_id
+  </sql>
+
+  <!-- 상태 컬럼: 테이블 별칭 s → 결과 컬럼 접두어 s_ (조인용) -->
+  <sql id="statusCols_s">
+    s.id         as s_id,
+    s.label      as s_label,
+    s.color      as s_color,
+    s.sort_order as s_sort_order,
+    s.is_done    as s_is_done,
+    s.board_id   as s_board_id
+  </sql>
+
+  <resultMap id="status" type="BoardStatus">
+    <id     property="id"        column="id"/>
+    <result property="label"     column="label"/>
+    <result property="color"     column="color"/>
+    <result property="sortOrder" column="sort_order"/>
+    <result property="done"      column="is_done"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <!-- 워크스페이스의 상태 목록 (첫 번째가 새 업무의 기본 상태) -->
+  <select id="selectStatusesByBoard" resultMap="status">
+    SELECT <include refid="statusCols"/>
+      FROM tb_board_status s
+     WHERE s.board_id = #{boardId}
+     ORDER BY s.sort_order, s.id
+  </select>
+
+  <!-- 상태 한 건 (업무 상태 변경 시 같은 워크스페이스인지 확인) -->
+  <select id="selectStatusById" resultMap="status">
+    SELECT <include refid="statusCols"/>
+      FROM tb_board_status s
+     WHERE s.id = #{id}
+  </select>
+
+  <!-- 상태 추가 -->
+  <insert id="insertStatus" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_status (board_id, label, color, sort_order, is_done)
+    VALUES (#{board.id}, #{label}, #{color}, #{sortOrder}, #{done})
+  </insert>
+
+  <!-- 상태 수정 -->
+  <update id="updateStatus">
+    UPDATE tb_board_status
+       SET label      = #{label},
+           color      = #{color},
+           sort_order = #{sortOrder},
+           is_done    = #{done}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 설정 화면에서 지운 상태들 삭제 (업무의 status_id 는 먼저 NULL 처리) -->
+  <delete id="deleteStatuses">
+    DELETE FROM tb_board_status
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 상태 전체 삭제 -->
+  <delete id="deleteStatusesByBoard">
+    DELETE FROM tb_board_status
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       사용자 정의 컬럼 (TB_BOARD_COLUMN)
+       =================================================================== -->
+
+  <!-- 컬럼 정의 컬럼: 테이블 별칭 c 를 그대로 (자기 테이블 조회용) -->
+  <sql id="columnCols">
+    c.id,
+    c.column_name,
+    c.column_type,
+    c.column_scope,
+    c.sort_order,
+    c.is_visible,
+    c.ref_board_id,
+    c.ref_column_id,
+    c.board_id
+  </sql>
+
+  <resultMap id="column" type="BoardColumn">
+    <id     property="id"          column="id"/>
+    <result property="name"        column="column_name"/>
+    <result property="type"        column="column_type"/>
+    <result property="scope"       column="column_scope"/>
+    <result property="sortOrder"   column="sort_order"/>
+    <result property="visible"     column="is_visible"/>
+    <result property="refBoardId"  column="ref_board_id"/>
+    <result property="refColumnId" column="ref_column_id"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <resultMap id="columnWithBoard" type="BoardColumn">
+    <id     property="id"          column="id"/>
+    <result property="name"        column="column_name"/>
+    <result property="type"        column="column_type"/>
+    <result property="scope"       column="column_scope"/>
+    <result property="sortOrder"   column="sort_order"/>
+    <result property="visible"     column="is_visible"/>
+    <result property="refBoardId"  column="ref_board_id"/>
+    <result property="refColumnId" column="ref_column_id"/>
+    <association property="board" resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief" columnPrefix="b_"/>
+  </resultMap>
+
+  <!-- 컬럼 + 소속 워크스페이스 조인 SELECT -->
+  <sql id="columnSelectWithBoard">
+    SELECT <include refid="columnCols"/>,
+           <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_b"/>
+      FROM tb_board_column c
+      JOIN tb_board b ON b.id = c.board_id
+  </sql>
+
+  <!-- 워크스페이스의 컬럼 목록 (정렬 순) -->
+  <select id="selectColumnsByBoard" resultMap="column">
+    SELECT <include refid="columnCols"/>
+      FROM tb_board_column c
+     WHERE c.board_id = #{boardId}
+     ORDER BY c.sort_order, c.id
+  </select>
+
+  <!-- 컬럼 한 건 + 소속 워크스페이스 (수정·삭제·연결 후보 검색 시 권한 검사) -->
+  <select id="selectColumnById" resultMap="columnWithBoard">
+    <include refid="columnSelectWithBoard"/>
+     WHERE c.id = #{id}
+  </select>
+
+  <!-- 특정 워크스페이스를 가리키는 연결(RELATION) 컬럼들 (역참조 '이 업무를 참조하는 곳' 계산) -->
+  <select id="selectColumnsByRefBoardAndType" resultMap="columnWithBoard">
+    <include refid="columnSelectWithBoard"/>
+     WHERE c.ref_board_id = #{refBoardId}
+       AND c.column_type  = #{type}
+  </select>
+
+  <!-- 마지막 정렬 번호 (새 컬럼은 끝에) -->
+  <select id="selectColumnMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_board_column
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 컬럼 추가 -->
+  <insert id="insertColumn" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_column (
+           board_id, column_name, column_type, column_scope, sort_order,
+           is_visible, ref_board_id, ref_column_id
+    ) VALUES (
+           #{board.id}, #{name}, #{type}, #{scope}, #{sortOrder},
+           #{visible}, #{refBoardId}, #{refColumnId}
+    )
+  </insert>
+
+  <!-- 컬럼 수정 (텍스트 → 연결 컬럼 변환도 여기서 type/ref 갱신) -->
+  <update id="updateColumn">
+    UPDATE tb_board_column
+       SET column_name   = #{name},
+           column_type   = #{type},
+           column_scope  = #{scope},
+           sort_order    = #{sortOrder},
+           is_visible    = #{visible},
+           ref_board_id  = #{refBoardId},
+           ref_column_id = #{refColumnId}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 컬럼 삭제 (값은 ItemDao.deleteValuesByColumn 으로 먼저 삭제) -->
+  <delete id="deleteColumn">
+    DELETE FROM tb_board_column
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 컬럼 전체 삭제 -->
+  <delete id="deleteColumnsByBoard">
+    DELETE FROM tb_board_column
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       업무 유형 (TB_BOARD_TYPE) — 응답/처리 목표 시간은 SLA 계산에 사용
+       =================================================================== -->
+
+  <!-- 유형 컬럼: 테이블 별칭 t 를 그대로 (자기 테이블 조회용) -->
+  <sql id="typeCols">
+    t.id,
+    t.type_name,
+    t.color,
+    t.icon,
+    t.response_hours,
+    t.resolve_hours,
+    t.sort_order,
+    t.is_default,
+    t.board_id
+  </sql>
+
+  <!-- 유형 컬럼: 테이블 별칭 t → 결과 컬럼 접두어 t_ (조인용) -->
+  <sql id="typeCols_t">
+    t.id             as t_id,
+    t.type_name      as t_type_name,
+    t.color          as t_color,
+    t.icon           as t_icon,
+    t.response_hours as t_response_hours,
+    t.resolve_hours  as t_resolve_hours,
+    t.sort_order     as t_sort_order,
+    t.is_default     as t_is_default,
+    t.board_id       as t_board_id
+  </sql>
+
+  <resultMap id="type" type="BoardType">
+    <id     property="id"            column="id"/>
+    <result property="name"          column="type_name"/>
+    <result property="color"         column="color"/>
+    <result property="icon"          column="icon"/>
+    <result property="responseHours" column="response_hours"/>
+    <result property="resolveHours"  column="resolve_hours"/>
+    <result property="sortOrder"     column="sort_order"/>
+    <result property="defaultType"   column="is_default"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <!-- 워크스페이스의 유형 목록 -->
+  <select id="selectTypesByBoard" resultMap="type">
+    SELECT <include refid="typeCols"/>
+      FROM tb_board_type t
+     WHERE t.board_id = #{boardId}
+     ORDER BY t.sort_order, t.id
+  </select>
+
+  <!-- 유형 한 건 -->
+  <select id="selectTypeById" resultMap="type">
+    SELECT <include refid="typeCols"/>
+      FROM tb_board_type t
+     WHERE t.id = #{id}
+  </select>
+
+  <!-- 유형이 하나라도 있는 워크스페이스 ID (v3.0 이관: 없는 곳에 기본 유형 생성) -->
+  <select id="selectBoardIdsWithTypes" resultType="long">
+    SELECT DISTINCT board_id
+      FROM tb_board_type
+  </select>
+
+  <!-- 유형 추가 -->
+  <insert id="insertType" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_type (
+           board_id, type_name, color, icon,
+           response_hours, resolve_hours, sort_order, is_default
+    ) VALUES (
+           #{board.id}, #{name}, #{color}, #{icon},
+           #{responseHours}, #{resolveHours}, #{sortOrder}, #{defaultType}
+    )
+  </insert>
+
+  <!-- 유형 수정 -->
+  <update id="updateType">
+    UPDATE tb_board_type
+       SET type_name      = #{name},
+           color          = #{color},
+           icon           = #{icon},
+           response_hours = #{responseHours},
+           resolve_hours  = #{resolveHours},
+           sort_order     = #{sortOrder},
+           is_default     = #{defaultType}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 설정 화면에서 지운 유형들 삭제 (업무의 type_id 는 먼저 NULL 처리) -->
+  <delete id="deleteTypes">
+    DELETE FROM tb_board_type
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 유형 전체 삭제 -->
+  <delete id="deleteTypesByBoard">
+    DELETE FROM tb_board_type
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       버전·마일스톤 (TB_BOARD_VERSION)
+       =================================================================== -->
+
+  <!-- 버전 컬럼: 테이블 별칭 v 를 그대로 (자기 테이블 조회용) -->
+  <sql id="versionCols">
+    v.id,
+    v.version_name,
+    v.description,
+    v.start_date,
+    v.due_date,
+    v.version_status,
+    v.sort_order,
+    v.board_id
+  </sql>
+
+  <!-- 버전 컬럼: 테이블 별칭 v → 결과 컬럼 접두어 v_ (조인용) -->
+  <sql id="versionCols_v">
+    v.id             as v_id,
+    v.version_name   as v_version_name,
+    v.description    as v_description,
+    v.start_date     as v_start_date,
+    v.due_date       as v_due_date,
+    v.version_status as v_version_status,
+    v.sort_order     as v_sort_order,
+    v.board_id       as v_board_id
+  </sql>
+
+  <resultMap id="version" type="BoardVersion">
+    <id     property="id"          column="id"/>
+    <result property="name"        column="version_name"/>
+    <result property="description" column="description"/>
+    <result property="startDate"   column="start_date"/>
+    <result property="dueDate"     column="due_date"/>
+    <result property="status"      column="version_status"/>
+    <result property="sortOrder"   column="sort_order"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <resultMap id="versionWithBoard" type="BoardVersion">
+    <id     property="id"          column="id"/>
+    <result property="name"        column="version_name"/>
+    <result property="description" column="description"/>
+    <result property="startDate"   column="start_date"/>
+    <result property="dueDate"     column="due_date"/>
+    <result property="status"      column="version_status"/>
+    <result property="sortOrder"   column="sort_order"/>
+    <association property="board" resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief" columnPrefix="b_"/>
+  </resultMap>
+
+  <!-- 워크스페이스의 버전 목록 (로드맵 순서) -->
+  <select id="selectVersionsByBoard" resultMap="version">
+    SELECT <include refid="versionCols"/>
+      FROM tb_board_version v
+     WHERE v.board_id = #{boardId}
+     ORDER BY v.sort_order, v.id
+  </select>
+
+  <!-- 버전 한 건 + 소속 워크스페이스 (수정·삭제 권한 검사) -->
+  <select id="selectVersionById" resultMap="versionWithBoard">
+    SELECT <include refid="versionCols"/>,
+           <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_b"/>
+      FROM tb_board_version v
+      JOIN tb_board b ON b.id = v.board_id
+     WHERE v.id = #{id}
+  </select>
+
+  <!-- 마지막 정렬 번호 -->
+  <select id="selectVersionMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_board_version
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 버전 추가 -->
+  <insert id="insertVersion" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_version (
+           board_id, version_name, description, start_date, due_date, version_status, sort_order
+    ) VALUES (
+           #{board.id}, #{name}, #{description}, #{startDate}, #{dueDate}, #{status}, #{sortOrder}
+    )
+  </insert>
+
+  <!-- 버전 수정 -->
+  <update id="updateVersion">
+    UPDATE tb_board_version
+       SET version_name   = #{name},
+           description    = #{description},
+           start_date     = #{startDate},
+           due_date       = #{dueDate},
+           version_status = #{status},
+           sort_order     = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 버전 삭제 (업무의 version_id 는 ItemDao.updateClearVersion 으로 먼저 NULL 처리) -->
+  <delete id="deleteVersion">
+    DELETE FROM tb_board_version
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 버전 전체 삭제 -->
+  <delete id="deleteVersionsByBoard">
+    DELETE FROM tb_board_version
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       보기 탭 (TB_BOARD_VIEW)
+       =================================================================== -->
+
+  <resultMap id="view" type="BoardView">
+    <id     property="id"        column="id"/>
+    <result property="boardId"   column="board_id"/>
+    <result property="name"      column="view_name"/>
+    <result property="type"      column="view_type"/>
+    <result property="config"    column="view_config"/>
+    <result property="sortOrder" column="sort_order"/>
+  </resultMap>
+
+  <sql id="viewSelect">
+    SELECT id, board_id, view_name, view_type, view_config, sort_order
+      FROM tb_board_view
+  </sql>
+
+  <!-- 워크스페이스의 보기 탭 목록 (탭 순서) -->
+  <select id="selectViewsByBoard" resultMap="view">
+    <include refid="viewSelect"/>
+     WHERE board_id = #{boardId}
+     ORDER BY sort_order, id
+  </select>
+
+  <!-- 보기 탭 한 건 -->
+  <select id="selectViewById" resultMap="view">
+    <include refid="viewSelect"/>
+     WHERE id = #{id}
+  </select>
+
+  <!-- 탭 수 (마지막 탭 삭제 방지) -->
+  <select id="selectViewCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_board_view
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 마지막 정렬 번호 -->
+  <select id="selectViewMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_board_view
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 탭이 하나라도 있는 워크스페이스 ID (기동 시 없는 곳에 기본 탭 생성) -->
+  <select id="selectBoardIdsWithViews" resultType="long">
+    SELECT DISTINCT board_id
+      FROM tb_board_view
+  </select>
+
+  <!-- 보기 탭 추가 -->
+  <insert id="insertView" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_view (board_id, view_name, view_type, view_config, sort_order)
+    VALUES (#{boardId}, #{name}, #{type}, #{config}, #{sortOrder})
+  </insert>
+
+  <!-- 보기 탭 이름·유형·설정·순서 수정 -->
+  <update id="updateView">
+    UPDATE tb_board_view
+       SET view_name   = #{name},
+           view_type   = #{type},
+           view_config = #{config},
+           sort_order  = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 보기 탭 삭제 -->
+  <delete id="deleteView">
+    DELETE FROM tb_board_view
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 탭 전체 삭제 -->
+  <delete id="deleteViewsByBoard">
+    DELETE FROM tb_board_view
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       멤버 (TB_BOARD_MEMBER)
+       =================================================================== -->
+
+  <resultMap id="member" type="BoardMember">
+    <id     property="id"      column="id"/>
+    <result property="boardId" column="board_id"/>
+    <result property="role"    column="member_role"/>
+    <association property="user" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="u_"/>
+  </resultMap>
+
+  <!-- 멤버 + 사용자 조인 SELECT -->
+  <sql id="memberSelect">
+    SELECT m.id, m.board_id, m.member_role,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_u"/>
+      FROM tb_board_member m
+      JOIN tb_app_user u ON u.id = m.user_id
+  </sql>
+
+  <!-- 워크스페이스의 멤버 목록 (이름순) -->
+  <select id="selectMembersByBoard" resultMap="member">
+    <include refid="memberSelect"/>
+     WHERE m.board_id = #{boardId}
+     ORDER BY u.display_name
+  </select>
+
+  <!-- 사용자가 멤버인 모든 워크스페이스 -->
+  <select id="selectMembersByUser" resultMap="member">
+    <include refid="memberSelect"/>
+     WHERE m.user_id = #{userId}
+  </select>
+
+  <!-- 특정 워크스페이스·사용자의 멤버 한 건 (역할 확인) -->
+  <select id="selectMember" resultMap="member">
+    <include refid="memberSelect"/>
+     WHERE m.board_id = #{boardId}
+       AND m.user_id  = #{userId}
+  </select>
+
+  <!-- 멤버 여부 (비공개 워크스페이스 접근 검사) -->
+  <select id="selectMemberExists" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_board_member
+     WHERE board_id = #{boardId}
+       AND user_id  = #{userId}
+  </select>
+
+  <!-- 사용자가 볼 수 있는 비공개 워크스페이스 ID 목록 -->
+  <select id="selectBoardIdsByUser" resultType="long">
+    SELECT board_id
+      FROM tb_board_member
+     WHERE user_id = #{userId}
+  </select>
+
+  <!-- 워크스페이스별 멤버 수 (board_id, cnt) — 목록 화면 표시용 -->
+  <select id="selectMemberCountByBoard" resultType="map">
+    SELECT board_id, COUNT(*) AS cnt
+      FROM tb_board_member
+     GROUP BY board_id
+  </select>
+
+  <!-- 멤버 추가 -->
+  <insert id="insertMember" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_member (board_id, user_id, member_role)
+    VALUES (#{boardId}, #{user.id}, #{role})
+  </insert>
+
+  <!-- 역할(OWNER/MEMBER) 변경 -->
+  <update id="updateMemberRole">
+    UPDATE tb_board_member
+       SET member_role = #{role}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 멤버 제외 -->
+  <delete id="deleteMember">
+    DELETE FROM tb_board_member
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 멤버 전체 삭제 -->
+  <delete id="deleteMembersByBoard">
+    DELETE FROM tb_board_member
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       즐겨찾기 (TB_BOARD_FAVORITE)
+       =================================================================== -->
+
+  <!-- 사용자가 즐겨찾기한 워크스페이스 ID 전체 -->
+  <select id="selectFavoriteBoardIds" resultType="long">
+    SELECT board_id
+      FROM tb_board_favorite
+     WHERE user_id = #{userId}
+  </select>
+
+  <!-- 즐겨찾기 여부 -->
+  <select id="selectFavoriteExists" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_board_favorite
+     WHERE board_id = #{boardId}
+       AND user_id  = #{userId}
+  </select>
+
+  <!-- 즐겨찾기 추가 (중복 여부는 서비스에서 먼저 확인) -->
+  <insert id="insertFavorite">
+    INSERT INTO tb_board_favorite (board_id, user_id, created_at)
+    VALUES (#{boardId}, #{userId}, CURRENT_TIMESTAMP)
+  </insert>
+
+  <!-- 즐겨찾기 해제 -->
+  <delete id="deleteFavorite">
+    DELETE FROM tb_board_favorite
+     WHERE board_id = #{boardId}
+       AND user_id  = #{userId}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 즐겨찾기 전체 삭제 -->
+  <delete id="deleteFavoritesByBoard">
+    DELETE FROM tb_board_favorite
+     WHERE board_id = #{boardId}
+  </delete>
+
+  <!-- ===================================================================
+       사이드바 정렬 순서 (TB_BOARD_ORDER) — 사용자별 워크스페이스 위/아래 이동
+       =================================================================== -->
+
+  <!-- 사용자의 워크스페이스 정렬 순서 (board_id, sort_order). 없는 워크스페이스는 이름순으로 뒤에 붙음 -->
+  <select id="selectBoardOrders" resultType="map">
+    SELECT board_id, sort_order
+      FROM tb_board_order
+     WHERE user_id = #{userId}
+  </select>
+
+  <!-- 정렬 순서 일괄 저장 (목록 순서 = sort_order). 저장 전에 deleteBoardOrdersByUser 로 비움 -->
+  <insert id="batchInsertBoardOrders">
+    INSERT INTO tb_board_order (user_id, board_id, sort_order)
+    VALUES
+    <foreach collection="ids" item="x" index="i" separator=",">
+      (#{userId}, #{x}, #{i})
+    </foreach>
+  </insert>
+
+  <!-- 사용자의 정렬 순서 전체 삭제 (다시 저장하기 전) -->
+  <delete id="deleteBoardOrdersByUser">
+    DELETE FROM tb_board_order
+     WHERE user_id = #{userId}
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 정렬 순서 전체 삭제 -->
+  <delete id="deleteBoardOrdersByBoard">
+    DELETE FROM tb_board_order
+     WHERE board_id = #{boardId}
+  </delete>
+
+</mapper>
