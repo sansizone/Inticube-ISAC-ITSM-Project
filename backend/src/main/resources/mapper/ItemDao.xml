@@ -1,0 +1,476 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  업무 (TB_ITEM) 와 사용자 정의 컬럼 값 (TB_ITEM_VALUE)
+
+  - item 결과맵은 업무 한 건을 읽을 때 직접 연관된 것들을 한 번의 조인으로 채운다
+      b_ 워크스페이스, g_ 그룹, s_ 상태, d_ 담당업무, p_ 상위 업무, a_ 담당자, c_ 등록자, t_ 유형, v_ 버전
+    (notNullColumn="id" 로 LEFT JOIN 결과가 비면 객체를 null 로 둔다)
+  - 목록 화면처럼 대량으로 읽을 때는 조인 없는 selectRowsByBoard (map) 를 쓴다
+  - 쓰기: 연관 객체는 #{status.id} 처럼 id 만 사용 (객체가 null 이면 MyBatis 가 null 로 바인딩)
+-->
+<mapper namespace="com.inticube.teamboard.dao.ItemDao">
+
+  <!-- ===================================================================
+       결과맵 / 공통 SELECT
+       =================================================================== -->
+
+  <resultMap id="item" type="Item">
+    <id     property="id"            column="id"/>
+    <result property="name"          column="item_name"/>
+    <result property="description"   column="description"/>
+    <result property="externalId"    column="external_id"/>
+    <result property="priority"      column="priority"/>
+    <result property="startDate"     column="start_date"/>
+    <result property="dueDate"       column="due_date"/>
+    <result property="sortOrder"     column="sort_order"/>
+    <result property="keyNum"        column="key_num"/>
+    <result property="estimateHours" column="estimate_hours"/>
+    <result property="progress"      column="progress"/>
+    <result property="respondedAt"   column="responded_at"/>
+    <result property="resolvedAt"    column="resolved_at"/>
+    <result property="recurRule"     column="recur_rule"/>
+    <result property="createdAt"     column="created_at"/>
+    <result property="updatedAt"     column="updated_at"/>
+    <association property="board"     resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief"        columnPrefix="b_"/>
+    <association property="group"     resultMap="com.inticube.teamboard.dao.BoardPartsDao.group"        columnPrefix="g_"/>
+    <association property="status"    resultMap="com.inticube.teamboard.dao.BoardPartsDao.status"       columnPrefix="s_" notNullColumn="id"/>
+    <association property="duty"      resultMap="com.inticube.teamboard.dao.BoardDutyDao.dutyBrief"     columnPrefix="d_" notNullColumn="id"/>
+    <association property="assignee"  resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief"       columnPrefix="a_" notNullColumn="id"/>
+    <association property="createdBy" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief"       columnPrefix="c_" notNullColumn="id"/>
+    <association property="type"      resultMap="com.inticube.teamboard.dao.BoardPartsDao.type"         columnPrefix="t_" notNullColumn="id"/>
+    <association property="version"   resultMap="com.inticube.teamboard.dao.BoardPartsDao.version"      columnPrefix="v_" notNullColumn="id"/>
+    <!-- 상위 업무는 id·이름·번호만 (재귀 조인 방지) -->
+    <association property="parent" javaType="Item" columnPrefix="p_" notNullColumn="id">
+      <id     property="id"     column="id"/>
+      <result property="name"   column="item_name"/>
+      <result property="keyNum" column="key_num"/>
+    </association>
+  </resultMap>
+
+  <!-- 업무 + 직접 연관 전체 조인 -->
+  <sql id="itemSelect">
+    SELECT i.id, i.item_name, COALESCE(i.description, '') AS description, i.external_id,
+           i.priority, i.start_date, i.due_date, i.sort_order,
+           i.key_num, i.estimate_hours, i.progress, i.responded_at, i.resolved_at, i.recur_rule,
+           i.created_at, i.updated_at,
+           <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_b"/>,
+           <include refid="com.inticube.teamboard.dao.BoardPartsDao.groupCols_g"/>,
+           <include refid="com.inticube.teamboard.dao.BoardPartsDao.statusCols_s"/>,
+           <include refid="com.inticube.teamboard.dao.BoardDutyDao.dutyBriefCols_d"/>,
+           p.id AS p_id, p.item_name AS p_item_name, p.key_num AS p_key_num,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_a"/>,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_c"/>,
+           <include refid="com.inticube.teamboard.dao.BoardPartsDao.typeCols_t"/>,
+           <include refid="com.inticube.teamboard.dao.BoardPartsDao.versionCols_v"/>
+      FROM tb_item i
+      JOIN tb_board         b ON b.id = i.board_id
+      JOIN tb_board_group   g ON g.id = i.group_id
+      LEFT JOIN tb_board_status  s ON s.id = i.status_id
+      LEFT JOIN tb_board_duty    d ON d.id = i.duty_id
+      LEFT JOIN tb_item          p ON p.id = i.parent_id
+      LEFT JOIN tb_app_user      a ON a.id = i.assignee_id
+      LEFT JOIN tb_app_user      c ON c.id = i.created_by
+      LEFT JOIN tb_board_type    t ON t.id = i.type_id
+      LEFT JOIN tb_board_version v ON v.id = i.version_id
+  </sql>
+
+  <!-- ===================================================================
+       업무 조회
+       =================================================================== -->
+
+  <!-- 업무 한 건 -->
+  <select id="selectById" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.id = #{id}
+  </select>
+
+  <!-- ID 목록으로 여러 건 (정렬 변경·관계 표시 등) -->
+  <select id="selectByIds" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 워크스페이스의 업무 전체 (엑셀 내보내기·삭제) -->
+  <select id="selectByBoard" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.board_id = #{boardId}
+     ORDER BY i.sort_order, i.id
+  </select>
+
+  <!-- 그룹의 업무 전체 (그룹 삭제) -->
+  <select id="selectByGroup" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.group_id = #{groupId}
+     ORDER BY i.sort_order, i.id
+  </select>
+
+  <!-- 상위 업무의 하위 업무 -->
+  <select id="selectByParent" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.parent_id = #{parentId}
+     ORDER BY i.sort_order, i.id
+  </select>
+
+  <!-- 여러 상위 업무의 하위 업무 한 번에 (일괄 삭제) -->
+  <select id="selectByParents" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.parent_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 담당자의 업무 (내 대시보드), 마감일 빠른 순 -->
+  <select id="selectByAssignee" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.assignee_id = #{userId}
+     ORDER BY i.due_date NULLS LAST, i.id
+  </select>
+
+  <!-- 이름 검색 (pattern 은 소문자 '%검색어%'), 최근 수정순 50건 -->
+  <select id="selectByNameLike" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE LOWER(i.item_name) LIKE #{pattern}
+     ORDER BY i.updated_at DESC
+     FETCH FIRST 50 ROWS ONLY
+  </select>
+
+  <!-- 업무 키(접두어-번호)로 찾기: 번호 부분 -->
+  <select id="selectByBoardAndKey" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.board_id = #{boardId}
+       AND i.key_num  = #{keyNum}
+  </select>
+
+  <!-- 아직 번호가 없는 업무 (가져오기·v3.0 이관 후 번호 부여) -->
+  <select id="selectWithoutKey" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.board_id = #{boardId}
+       AND i.key_num IS NULL
+     ORDER BY i.id
+  </select>
+
+  <!-- 마감 임박 알림 대상: 기간 안에 마감이고 담당자가 있으며 완료가 아닌 업무 -->
+  <select id="selectOpenDueBetween" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.due_date BETWEEN #{from} AND #{to}
+       AND i.assignee_id IS NOT NULL
+       AND (s.id IS NULL OR s.is_done = false)
+  </select>
+
+  <!-- SLA 알림 대상: 아직 처리되지 않았고 유형에 처리 목표 시간이 있는 업무 -->
+  <select id="selectOpenWithSla" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.resolved_at IS NULL
+       AND t.resolve_hours IS NOT NULL
+  </select>
+
+  <!-- 그룹 안 마지막 정렬 번호 (새 업무는 끝에) -->
+  <select id="selectMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0)
+      FROM tb_item
+     WHERE group_id = #{groupId}
+  </select>
+
+  <!-- 워크스페이스 안 가장 큰 업무 번호 (next_seq 와 비교해 키 발급) -->
+  <select id="selectMaxKeyNum" resultType="int">
+    SELECT COALESCE(MAX(key_num), 0)
+      FROM tb_item
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- 워크스페이스별 상위 업무 수·완료 수 (board_id, total, done) — 목록 진행률 -->
+  <select id="selectCountByBoard" resultType="map">
+    SELECT i.board_id,
+           COUNT(*)                                           AS total,
+           SUM(CASE WHEN s.is_done = true THEN 1 ELSE 0 END)  AS done
+      FROM tb_item i
+      LEFT JOIN tb_board_status s ON s.id = i.status_id
+     WHERE i.parent_id IS NULL
+     GROUP BY i.board_id
+  </select>
+
+  <!-- 워크스페이스 화면용 경량 행 (연관은 id 만, 담당자 이름만 조인) -->
+  <select id="selectRowsByBoard" resultType="map">
+    SELECT i.id, i.group_id, i.duty_id, i.parent_id, i.item_name,
+           i.status_id, i.assignee_id,
+           a.username AS a_username, a.display_name AS a_name, a.department AS a_department,
+           i.priority, i.start_date, i.due_date, i.sort_order, i.created_at, i.updated_at,
+           i.key_num, i.type_id, i.version_id, i.estimate_hours, i.progress,
+           i.responded_at, i.resolved_at, i.recur_rule
+      FROM tb_item i
+      LEFT JOIN tb_app_user a ON a.id = i.assignee_id
+     WHERE i.board_id = #{boardId}
+     ORDER BY i.sort_order, i.id
+  </select>
+
+  <!-- 업무 ID → 이름·워크스페이스 (연결 컬럼 표시값·활동 로그용) -->
+  <select id="selectNames" resultType="map">
+    SELECT id, item_name, board_id
+      FROM tb_item
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 연결 컬럼 선택 후보: 워크스페이스의 상위 업무 + 그룹명 -->
+  <select id="selectPickRows" resultType="map">
+    SELECT i.id, i.item_name, g.group_name
+      FROM tb_item i
+      JOIN tb_board_group g ON g.id = i.group_id
+     WHERE i.board_id = #{boardId}
+       AND i.parent_id IS NULL
+     ORDER BY g.sort_order, i.sort_order, i.id
+  </select>
+
+  <!-- 워크스페이스의 업무 ID 전체 (삭제 전 부속 데이터 정리) -->
+  <select id="selectIdsByBoard" resultType="long">
+    SELECT id
+      FROM tb_item
+     WHERE board_id = #{boardId}
+  </select>
+
+  <!-- ===================================================================
+       업무 변경
+       =================================================================== -->
+
+  <!-- 업무 생성 -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_item (
+           board_id, group_id, item_name, description, status_id, duty_id, parent_id, external_id,
+           assignee_id, priority, start_date, due_date, sort_order,
+           key_num, type_id, version_id, estimate_hours, progress,
+           responded_at, resolved_at, recur_rule,
+           created_by, created_at, updated_at
+    ) VALUES (
+           #{board.id}, #{group.id}, #{name}, COALESCE(#{description}, ''), #{status.id}, #{duty.id}, #{parent.id}, #{externalId},
+           #{assignee.id}, #{priority}, #{startDate}, #{dueDate}, #{sortOrder},
+           #{keyNum}, #{type.id}, #{version.id}, #{estimateHours}, #{progress},
+           #{respondedAt}, #{resolvedAt}, #{recurRule},
+           #{createdBy.id}, #{createdAt}, #{updatedAt}
+    )
+  </insert>
+
+  <!-- 업무 전체 갱신 (created_by / created_at 제외) -->
+  <update id="update">
+    UPDATE tb_item
+       SET board_id       = #{board.id},
+           group_id       = #{group.id},
+           item_name      = #{name},
+           description    = COALESCE(#{description}, ''),
+           status_id      = #{status.id},
+           duty_id        = #{duty.id},
+           parent_id      = #{parent.id},
+           external_id    = #{externalId},
+           assignee_id    = #{assignee.id},
+           priority       = #{priority},
+           start_date     = #{startDate},
+           due_date       = #{dueDate},
+           sort_order     = #{sortOrder},
+           key_num        = #{keyNum},
+           type_id        = #{type.id},
+           version_id     = #{version.id},
+           estimate_hours = #{estimateHours},
+           progress       = #{progress},
+           responded_at   = #{respondedAt},
+           resolved_at    = #{resolvedAt},
+           recur_rule     = #{recurRule},
+           updated_at     = #{updatedAt}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 드래그앤드롭 결과: 그룹과 순서만 변경 -->
+  <update id="updateGroupAndSort">
+    UPDATE tb_item
+       SET group_id   = #{groupId},
+           sort_order = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 상위 업무가 그룹을 옮기면 하위 업무도 따라감 -->
+  <update id="updateGroupOfChildren">
+    UPDATE tb_item
+       SET group_id = #{groupId}
+     WHERE parent_id = #{parentId}
+  </update>
+
+  <!-- 상위 업무 유형 변경 시 하위 업무 유형도 맞춤 -->
+  <update id="updateTypeOfChildren">
+    UPDATE tb_item
+       SET type_id = #{typeId}
+     WHERE parent_id = #{parentId}
+  </update>
+
+  <!-- 업무 번호 부여 (batchAssignKeys) -->
+  <update id="updateKeyNum">
+    UPDATE tb_item
+       SET key_num = #{keyNum}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 상태 삭제 전: 그 상태를 쓰는 업무의 상태 비움 -->
+  <update id="updateClearStatus">
+    UPDATE tb_item
+       SET status_id = NULL
+     WHERE status_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 유형 삭제 전: 그 유형을 쓰는 업무의 유형 비움 -->
+  <update id="updateClearType">
+    UPDATE tb_item
+       SET type_id = NULL
+     WHERE type_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 버전 삭제 전: 그 버전을 쓰는 업무의 버전 비움 -->
+  <update id="updateClearVersion">
+    UPDATE tb_item
+       SET version_id = NULL
+     WHERE version_id = #{versionId}
+  </update>
+
+  <!-- 담당업무 삭제 전: 그 담당업무를 쓰는 업무의 담당업무 비움 -->
+  <update id="updateClearDuty">
+    UPDATE tb_item
+       SET duty_id = NULL
+     WHERE duty_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 삭제 전 자기참조(parent_id) 끊기 -->
+  <update id="updateClearParent">
+    UPDATE tb_item
+       SET parent_id = NULL
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 업무 삭제 (값·댓글·첨부·관계 등 부속은 서비스에서 먼저 삭제) -->
+  <delete id="deleteByIds">
+    DELETE FROM tb_item
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- ===================================================================
+       사용자 정의 컬럼 값 (TB_ITEM_VALUE) — 업무 × 컬럼 당 한 행, 값은 문자열 그대로
+       =================================================================== -->
+
+  <resultMap id="value" type="ItemValue">
+    <id     property="id"       column="id"/>
+    <result property="itemId"   column="item_id"/>
+    <result property="columnId" column="column_id"/>
+    <result property="value"    column="val_text"/>
+  </resultMap>
+
+  <sql id="valueSelect">
+    SELECT id, item_id, column_id, val_text
+      FROM tb_item_value
+  </sql>
+
+  <!-- 업무 하나의 값 전체 -->
+  <select id="selectValuesByItem" resultMap="value">
+    <include refid="valueSelect"/>
+     WHERE item_id = #{itemId}
+  </select>
+
+  <!-- 여러 업무의 값 (워크스페이스 화면·이동) -->
+  <select id="selectValuesByItems" resultMap="value">
+    <include refid="valueSelect"/>
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 특정 컬럼들의 값 전체 (엑셀 내보내기·컬럼 변환) -->
+  <select id="selectValuesByColumns" resultMap="value">
+    <include refid="valueSelect"/>
+     WHERE column_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 업무 하나의 특정 컬럼 값들 (부분 수정 시 기존 값 조회) -->
+  <select id="selectValuesByItemAndColumns" resultMap="value">
+    <include refid="valueSelect"/>
+     WHERE item_id = #{itemId}
+       AND column_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 컬럼들의 (item_id, column_id, val_text) — 연결 컬럼 표시값 수집 -->
+  <select id="selectValueTuplesByColumns" resultType="map">
+    SELECT item_id, column_id, val_text
+      FROM tb_item_value
+     WHERE column_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 컬럼 하나의 (item_id, val_text) — 연결 컬럼의 표시 컬럼 값 -->
+  <select id="selectValueTuplesByColumn" resultType="map">
+    SELECT item_id, val_text
+      FROM tb_item_value
+     WHERE column_id = #{columnId}
+  </select>
+
+  <!-- 컬럼 하나의 특정 업무 값들 (item_id, val_text) -->
+  <select id="selectValueTuplesByColumnAndItems" resultType="map">
+    SELECT item_id, val_text
+      FROM tb_item_value
+     WHERE column_id = #{columnId}
+       AND item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 값에 특정 문자열이 포함된 행 (역참조: '%업무ID%' 로 거른 뒤 서비스에서 정확히 비교) -->
+  <select id="selectValueTuplesLike" resultType="map">
+    SELECT item_id, column_id, val_text
+      FROM tb_item_value
+     WHERE column_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+       AND val_text LIKE #{pattern}
+  </select>
+
+  <!-- 값 한 건 추가 -->
+  <insert id="insertValue" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_item_value (item_id, column_id, val_text)
+    VALUES (#{itemId}, #{columnId}, #{value})
+  </insert>
+
+  <!-- 값 일괄 추가 (가져오기·반복 업무 복사). 호출 측에서 500건 단위로 나눠 호출 -->
+  <insert id="batchInsertValues">
+    INSERT INTO tb_item_value (item_id, column_id, val_text)
+    VALUES
+    <foreach collection="list" item="v" separator=",">
+      (#{v.itemId}, #{v.columnId}, #{v.value})
+    </foreach>
+  </insert>
+
+  <!-- 값 수정 (워크스페이스 이동 시 column_id 교체에도 사용) -->
+  <update id="updateValue">
+    UPDATE tb_item_value
+       SET item_id   = #{itemId},
+           column_id = #{columnId},
+           val_text  = #{value}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 값 삭제 (빈 값으로 수정하면 행을 지움) -->
+  <delete id="deleteValue">
+    DELETE FROM tb_item_value
+     WHERE id = #{id}
+  </delete>
+
+  <!-- 업무 삭제 시 값 전체 삭제 -->
+  <delete id="deleteValuesByItems">
+    DELETE FROM tb_item_value
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- 컬럼 삭제 시 값 전체 삭제 -->
+  <delete id="deleteValuesByColumn">
+    DELETE FROM tb_item_value
+     WHERE column_id = #{columnId}
+  </delete>
+
+</mapper>

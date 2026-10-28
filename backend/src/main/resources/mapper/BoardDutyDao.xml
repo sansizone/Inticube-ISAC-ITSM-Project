@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  담당업무 트리 (TB_BOARD_DUTY)
+  - 워크스페이스마다 '대 > 중 > 소' 형태의 트리. parent_id 가 NULL 이면 최상위
+  - primary_user / secondary_user : 정·부 담당자 (없을 수 있음 → LEFT JOIN)
+-->
+<mapper namespace="com.inticube.teamboard.dao.BoardDutyDao">
+
+  <!-- ===================================================================
+       공통 조각
+       =================================================================== -->
+
+  <!-- 담당업무 요약 컬럼: 테이블 별칭 d 를 그대로 (자기 테이블 조회용) -->
+  <sql id="dutyBriefCols">
+    d.id,
+    d.duty_name,
+    d.parent_id,
+    d.sort_order,
+    d.board_id
+  </sql>
+
+  <!-- 담당업무 요약 컬럼: 테이블 별칭 d → 결과 컬럼 접두어 d_ (조인용) -->
+  <sql id="dutyBriefCols_d">
+    d.id         as d_id,
+    d.duty_name  as d_duty_name,
+    d.parent_id  as d_parent_id,
+    d.sort_order as d_sort_order,
+    d.board_id   as d_board_id
+  </sql>
+
+  <!-- 요약 결과맵: board 는 id 만 -->
+  <resultMap id="dutyBrief" type="BoardDuty">
+    <id     property="id"        column="id"/>
+    <result property="name"      column="duty_name"/>
+    <result property="parentId"  column="parent_id"/>
+    <result property="sortOrder" column="sort_order"/>
+    <association property="board" javaType="Board">
+      <id property="id" column="board_id"/>
+    </association>
+  </resultMap>
+
+  <!-- 전체 결과맵: 정(pu_)·부(su_) 담당자 포함. notNullColumn 으로 담당자 없으면 null -->
+  <resultMap id="duty" type="BoardDuty" extends="dutyBrief">
+    <result property="createdAt" column="created_at"/>
+    <association property="primaryUser"   resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="pu_" notNullColumn="id"/>
+    <association property="secondaryUser" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="su_" notNullColumn="id"/>
+  </resultMap>
+
+  <!-- 담당업무 + 정·부 담당자 조인 SELECT -->
+  <sql id="dutySelect">
+    SELECT <include refid="dutyBriefCols"/>,
+           d.created_at,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_pu"/>,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_su"/>
+      FROM tb_board_duty d
+      LEFT JOIN tb_app_user pu ON pu.id = d.primary_user_id
+      LEFT JOIN tb_app_user su ON su.id = d.secondary_user_id
+  </sql>
+
+  <!-- ===================================================================
+       조회
+       =================================================================== -->
+
+  <!-- 워크스페이스의 담당업무 전체 (정렬 순 → 서비스에서 트리로 구성) -->
+  <select id="selectByBoard" resultMap="duty">
+    <include refid="dutySelect"/>
+     WHERE d.board_id = #{boardId}
+     ORDER BY d.sort_order, d.id
+  </select>
+
+  <!-- ID 로 한 건 조회 -->
+  <select id="selectById" resultMap="duty">
+    <include refid="dutySelect"/>
+     WHERE d.id = #{id}
+  </select>
+
+  <!-- 담당업무별 연결된 업무 수 (duty_id, cnt) -->
+  <select id="selectItemCounts" resultType="map">
+    SELECT duty_id, COUNT(*) AS cnt
+      FROM tb_item
+     WHERE board_id = #{boardId}
+       AND duty_id IS NOT NULL
+     GROUP BY duty_id
+  </select>
+
+  <!-- ===================================================================
+       변경
+       =================================================================== -->
+
+  <!-- 담당업무 추가 -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board_duty (
+           board_id, parent_id, duty_name, sort_order,
+           primary_user_id, secondary_user_id, created_at
+    ) VALUES (
+           #{board.id}, #{parentId}, #{name}, #{sortOrder},
+           #{primaryUser.id}, #{secondaryUser.id}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 이름·위치·담당자 갱신 -->
+  <update id="update">
+    UPDATE tb_board_duty
+       SET parent_id         = #{parentId},
+           duty_name         = #{name},
+           sort_order        = #{sortOrder},
+           primary_user_id   = #{primaryUser.id},
+           secondary_user_id = #{secondaryUser.id}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 하위 트리까지 묶어서 삭제 (ID 목록은 서비스에서 계산) -->
+  <delete id="deleteByIds">
+    DELETE FROM tb_board_duty
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- 워크스페이스 삭제 시 전체 삭제 -->
+  <delete id="deleteByBoard">
+    DELETE FROM tb_board_duty
+     WHERE board_id = #{boardId}
+  </delete>
+
+</mapper>

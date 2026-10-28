@@ -1,0 +1,59 @@
+server:
+  port: 8080
+  servlet:
+    session:
+      timeout: 60m
+      cookie:
+        http-only: true
+        same-site: lax
+        name: TBSESSION
+  compression:
+    enabled: true
+
+spring:
+  application:
+    name: isac-project
+  # PostgreSQL 전용 (MyBatis). 접속 정보는 환경변수 또는 실행 폴더의 config/application.yml 로 덮어쓴다.
+  # 스키마는 url 의 currentSchema 로 지정.
+  # 비밀번호는 파일에 넣지 말고 환경변수 DB_PASSWORD 로 전달.
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://10.1.15.181:5432/isacdb?currentSchema=teamboard}
+    username: ${DB_USERNAME:isac}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 10000
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 55MB
+  jackson:
+    time-zone: Asia/Seoul
+    serialization:
+      write-dates-as-timestamps: false
+
+# MyBatis: 매퍼 XML 은 classpath:mapper/*.xml. 테이블은 deploy/postgres-teamboard-schema.sql 로 만들고 업그레이드는 postgres-upgrade-*.sql
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.inticube.teamboard.domain
+  configuration:
+    map-underscore-to-camel-case: true
+    jdbc-type-for-null: NULL
+    default-fetch-size: 500
+
+teamboard:
+  init-admin-password: ${TEAMBOARD_ADMIN_PASSWORD:admin1234!}
+  upload-dir: ./data/uploads
+  max-login-failures: 5
+  lock-minutes: 10
+  due-reminder-cron: "0 30 8 * * *"
+  # 2단계 인증(OTP 앱) 강제: 전체 사용자 / 관리자만 (true 면 설정 전까지 다른 화면 사용 불가)
+  mfa-required: ${TEAMBOARD_MFA_REQUIRED:false}
+  mfa-required-for-admin: ${TEAMBOARD_MFA_REQUIRED_FOR_ADMIN:false}
+
+logging:
+  file:
+    name: ./logs/teamboard.log
+  level:
+    root: INFO

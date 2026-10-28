@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  알림 (TB_NOTIFICATION)
+  - 업무 알림은 item_id/board_id, 게시판 알림은 post_id 를 가진다
+  - recipient 는 id 만 채움 (알림함은 본인 것만 보므로 사용자 조인 불필요)
+-->
+<mapper namespace="com.inticube.teamboard.dao.NotificationDao">
+
+  <resultMap id="noti" type="Notification">
+    <id     property="id"        column="id"/>
+    <result property="type"      column="noti_type"/>
+    <result property="message"   column="message"/>
+    <result property="boardId"   column="board_id"/>
+    <result property="itemId"    column="item_id"/>
+    <result property="postId"    column="post_id"/>
+    <result property="read"      column="is_read"/>
+    <result property="createdAt" column="created_at"/>
+    <association property="recipient" javaType="AppUser">
+      <id property="id" column="recipient_id"/>
+    </association>
+  </resultMap>
+
+  <sql id="selectAll">
+    SELECT id, recipient_id, noti_type, message, board_id, item_id, post_id, is_read, created_at
+      FROM tb_notification
+  </sql>
+
+  <!-- ===================================================================
+       조회
+       =================================================================== -->
+
+  <!-- ID 로 한 건 (읽음 처리 전 본인 알림인지 확인용) -->
+  <select id="selectById" resultMap="noti">
+    <include refid="selectAll"/>
+     WHERE id = #{id}
+  </select>
+
+  <!-- 알림함: 최근 50건, 최신순 -->
+  <select id="selectRecent" resultMap="noti">
+    <include refid="selectAll"/>
+     WHERE recipient_id = #{userId}
+     ORDER BY created_at DESC, id DESC
+     FETCH FIRST 50 ROWS ONLY
+  </select>
+
+  <!-- 안 읽은 알림 수 (상단 배지) -->
+  <select id="selectUnreadCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_notification
+     WHERE recipient_id = #{userId}
+       AND is_read = false
+  </select>
+
+  <!-- 같은 업무·유형 알림을 최근(after 이후)에 이미 보냈는지 (마감 임박·SLA 알림 중복 방지) -->
+  <select id="selectExistsRecent" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_notification
+     WHERE recipient_id = #{userId}
+       AND item_id      = #{itemId}
+       AND noti_type    = #{type}
+       AND created_at   > #{after}
+  </select>
+
+  <!-- ===================================================================
+       변경
+       =================================================================== -->
+
+  <!-- 알림 생성 -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_notification (
+           recipient_id, noti_type, message, board_id, item_id, post_id, is_read, created_at
+    ) VALUES (
+           #{recipient.id}, #{type}, #{message}, #{boardId}, #{itemId}, #{postId}, #{read}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 한 건 읽음 처리 -->
+  <update id="updateRead">
+    UPDATE tb_notification
+       SET is_read = true
+     WHERE id = #{id}
+  </update>
+
+  <!-- 내 알림 모두 읽음 처리 -->
+  <update id="updateAllRead">
+    UPDATE tb_notification
+       SET is_read = true
+     WHERE recipient_id = #{userId}
+       AND is_read = false
+  </update>
+
+  <!-- 업무 삭제 시 관련 알림 삭제 -->
+  <delete id="deleteByItems">
+    DELETE FROM tb_notification
+     WHERE item_id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </delete>
+
+  <!-- 게시글 삭제 시 관련 알림 삭제 -->
+  <delete id="deleteByPost">
+    DELETE FROM tb_notification
+     WHERE post_id = #{postId}
+  </delete>
+
+  <!-- 오래된 알림 정리 (매일 03:00, 90일 지난 것) -->
+  <delete id="deleteOlderThan">
+    DELETE FROM tb_notification
+     WHERE created_at &lt; #{before}
+  </delete>
+
+</mapper>

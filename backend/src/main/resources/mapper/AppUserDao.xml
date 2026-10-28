@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  사용자 (TB_APP_USER)
+  - userCols_* / userBrief : 다른 매퍼가 작성자·담당자 등을 조인할 때 쓰는 요약 컬럼(별칭·접두어별로 고정)·결과맵
+  - user                  : 비밀번호 해시·2단계 인증 정보까지 포함한 전체 결과맵
+-->
+<mapper namespace="com.inticube.teamboard.dao.AppUserDao">
+
+  <!-- ===================================================================
+       공통 조각
+       =================================================================== -->
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 a → 결과 컬럼 접두어 a_ (조인용) -->
+  <sql id="userCols_a">
+    a.id           as a_id,
+    a.username     as a_username,
+    a.display_name as a_display_name,
+    a.department   as a_department,
+    a.user_role    as a_user_role,
+    a.is_active    as a_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 au → 결과 컬럼 접두어 au_ (조인용) -->
+  <sql id="userCols_au">
+    au.id           as au_id,
+    au.username     as au_username,
+    au.display_name as au_display_name,
+    au.department   as au_department,
+    au.user_role    as au_user_role,
+    au.is_active    as au_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 c → 결과 컬럼 접두어 c_ (조인용) -->
+  <sql id="userCols_c">
+    c.id           as c_id,
+    c.username     as c_username,
+    c.display_name as c_display_name,
+    c.department   as c_department,
+    c.user_role    as c_user_role,
+    c.is_active    as c_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 cb → 결과 컬럼 접두어 cb_ (조인용) -->
+  <sql id="userCols_cb">
+    cb.id           as cb_id,
+    cb.username     as cb_username,
+    cb.display_name as cb_display_name,
+    cb.department   as cb_department,
+    cb.user_role    as cb_user_role,
+    cb.is_active    as cb_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 o → 결과 컬럼 접두어 o_ (조인용) -->
+  <sql id="userCols_o">
+    o.id           as o_id,
+    o.username     as o_username,
+    o.display_name as o_display_name,
+    o.department   as o_department,
+    o.user_role    as o_user_role,
+    o.is_active    as o_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 pu → 결과 컬럼 접두어 pu_ (조인용) -->
+  <sql id="userCols_pu">
+    pu.id           as pu_id,
+    pu.username     as pu_username,
+    pu.display_name as pu_display_name,
+    pu.department   as pu_department,
+    pu.user_role    as pu_user_role,
+    pu.is_active    as pu_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 su → 결과 컬럼 접두어 su_ (조인용) -->
+  <sql id="userCols_su">
+    su.id           as su_id,
+    su.username     as su_username,
+    su.display_name as su_display_name,
+    su.department   as su_department,
+    su.user_role    as su_user_role,
+    su.is_active    as su_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 u → 결과 컬럼 접두어 u_ (조인용) -->
+  <sql id="userCols_u">
+    u.id           as u_id,
+    u.username     as u_username,
+    u.display_name as u_display_name,
+    u.department   as u_department,
+    u.user_role    as u_user_role,
+    u.is_active    as u_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 ub → 결과 컬럼 접두어 ub_ (조인용) -->
+  <sql id="userCols_ub">
+    ub.id           as ub_id,
+    ub.username     as ub_username,
+    ub.display_name as ub_display_name,
+    ub.department   as ub_department,
+    ub.user_role    as ub_user_role,
+    ub.is_active    as ub_is_active
+  </sql>
+
+  <!-- 사용자 요약 컬럼: 테이블 별칭 up → 결과 컬럼 접두어 up_ (조인용) -->
+  <sql id="userCols_up">
+    up.id           as up_id,
+    up.username     as up_username,
+    up.display_name as up_display_name,
+    up.department   as up_department,
+    up.user_role    as up_user_role,
+    up.is_active    as up_is_active
+  </sql>
+
+  <!-- 요약 결과맵: 화면 표시에 필요한 최소 정보 -->
+  <resultMap id="userBrief" type="AppUser">
+    <id     property="id"         column="id"/>
+    <result property="username"   column="username"/>
+    <result property="name"       column="display_name"/>
+    <result property="department" column="department"/>
+    <result property="role"       column="user_role"/>
+    <result property="active"     column="is_active"/>
+  </resultMap>
+
+  <!-- 전체 결과맵: 로그인·관리자 기능용 -->
+  <resultMap id="user" type="AppUser" extends="userBrief">
+    <result property="passwordHash"       column="password_hash"/>
+    <result property="mustChangePassword" column="must_change_pw"/>
+    <result property="createdAt"          column="created_at"/>
+    <result property="totpSecret"         column="totp_secret"/>
+    <result property="totpEnabled"        column="totp_enabled"/>
+    <result property="recoveryCodes"      column="recovery_codes"/>
+  </resultMap>
+
+  <!-- 전체 컬럼 SELECT -->
+  <sql id="selectAll">
+    SELECT id, username, password_hash, display_name, department, user_role,
+           is_active, must_change_pw, created_at,
+           totp_secret, totp_enabled, recovery_codes
+      FROM tb_app_user
+  </sql>
+
+  <!-- ===================================================================
+       조회
+       =================================================================== -->
+
+  <!-- ID 로 한 명 조회 -->
+  <select id="selectById" resultMap="user">
+    <include refid="selectAll"/>
+     WHERE id = #{id}
+  </select>
+
+  <!-- 아이디(로그인 ID)로 한 명 조회 -->
+  <select id="selectByUsername" resultMap="user">
+    <include refid="selectAll"/>
+     WHERE username = #{username}
+  </select>
+
+  <!-- 전체 사용자, 이름순 (관리자 화면) -->
+  <select id="selectAllOrderByName" resultMap="user">
+    <include refid="selectAll"/>
+     ORDER BY display_name, id
+  </select>
+
+  <!-- 활성 사용자만, 이름순 (담당자 선택 목록) -->
+  <select id="selectActiveOrderByName" resultMap="user">
+    <include refid="selectAll"/>
+     WHERE is_active = true
+     ORDER BY display_name, id
+  </select>
+
+  <!-- ID 목록으로 여러 명 조회 -->
+  <select id="selectByIds" resultMap="user">
+    <include refid="selectAll"/>
+     WHERE id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 아이디 목록 중 활성 사용자 (댓글 @멘션 대상 찾기) -->
+  <select id="selectActiveByUsernames" resultMap="user">
+    <include refid="selectAll"/>
+     WHERE is_active = true
+       AND username IN
+    <foreach collection="names" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </select>
+
+  <!-- 전체 사용자 수 (0 이면 최초 기동 → admin 생성) -->
+  <select id="selectCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_app_user
+  </select>
+
+  <!-- 아이디 중복 여부 -->
+  <select id="selectExistsByUsername" resultType="boolean">
+    SELECT COUNT(*) > 0
+      FROM tb_app_user
+     WHERE username = #{username}
+  </select>
+
+  <!-- 활성 관리자 수 (마지막 관리자 비활성화 방지) -->
+  <select id="selectActiveAdminCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_app_user
+     WHERE user_role = 'ADMIN'
+       AND is_active = true
+  </select>
+
+  <!-- 외부 데이터 이관용 자동 아이디(m0001 형식)의 마지막 번호 -->
+  <select id="selectMaxImportSeq" resultType="int">
+    SELECT COALESCE(MAX(CAST(SUBSTRING(username FROM 2) AS integer)), 0)
+      FROM tb_app_user
+     WHERE username ~ '^m[0-9]{4}$'
+  </select>
+
+  <!-- ===================================================================
+       변경
+       =================================================================== -->
+
+  <!-- 사용자 등록 (id 자동 채번 → 객체에 채워 줌) -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_app_user (
+           username, password_hash, display_name, department, user_role,
+           is_active, must_change_pw, created_at,
+           totp_secret, totp_enabled, recovery_codes
+    ) VALUES (
+           #{username}, #{passwordHash}, #{name}, #{department}, #{role},
+           #{active}, #{mustChangePassword}, #{createdAt},
+           #{totpSecret}, #{totpEnabled}, #{recoveryCodes}
+    )
+  </insert>
+
+  <!-- 사용자 전체 갱신 (created_at 제외) -->
+  <update id="update">
+    UPDATE tb_app_user
+       SET username       = #{username},
+           password_hash  = #{passwordHash},
+           display_name   = #{name},
+           department     = #{department},
+           user_role      = #{role},
+           is_active      = #{active},
+           must_change_pw = #{mustChangePassword},
+           totp_secret    = #{totpSecret},
+           totp_enabled   = #{totpEnabled},
+           recovery_codes = #{recoveryCodes}
+     WHERE id = #{id}
+  </update>
+
+</mapper>

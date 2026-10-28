@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  워크스페이스 (TB_BOARD)
+  - boardCols_* / boardBrief : 다른 매퍼(업무 등)가 조인할 때 쓰는 요약 컬럼(별칭·접두어별로 고정)·결과맵 (owner 는 id 만)
+  - board                  : 만든 사람(owner)까지 조인한 결과맵
+-->
+<mapper namespace="com.inticube.teamboard.dao.BoardDao">
+
+  <!-- ===================================================================
+       공통 조각
+       =================================================================== -->
+
+  <!-- 워크스페이스 요약 컬럼: 테이블 별칭 b 를 그대로 (자기 테이블 조회용) -->
+  <sql id="boardCols">
+    b.id,
+    b.board_name,
+    b.description,
+    b.is_public,
+    b.column_config,
+    b.key_prefix,
+    b.next_seq,
+    b.sla_business,
+    b.owner_id,
+    b.created_at
+  </sql>
+
+  <!-- 워크스페이스 요약 컬럼: 테이블 별칭 b → 결과 컬럼 접두어 b_ (조인용) -->
+  <sql id="boardCols_b">
+    b.id            as b_id,
+    b.board_name    as b_board_name,
+    b.description   as b_description,
+    b.is_public     as b_is_public,
+    b.column_config as b_column_config,
+    b.key_prefix    as b_key_prefix,
+    b.next_seq      as b_next_seq,
+    b.sla_business  as b_sla_business,
+    b.owner_id      as b_owner_id,
+    b.created_at    as b_created_at
+  </sql>
+
+  <!-- 워크스페이스 요약 컬럼: 테이블 별칭 b → 결과 컬럼 접두어 i_b_ (조인용) -->
+  <sql id="boardCols_i_b">
+    b.id            as i_b_id,
+    b.board_name    as i_b_board_name,
+    b.description   as i_b_description,
+    b.is_public     as i_b_is_public,
+    b.column_config as i_b_column_config,
+    b.key_prefix    as i_b_key_prefix,
+    b.next_seq      as i_b_next_seq,
+    b.sla_business  as i_b_sla_business,
+    b.owner_id      as i_b_owner_id,
+    b.created_at    as i_b_created_at
+  </sql>
+
+  <!-- 요약 결과맵: owner 는 id 만 채움 (조인 없이 쓸 때) -->
+  <resultMap id="boardBrief" type="Board">
+    <id     property="id"               column="id"/>
+    <result property="name"             column="board_name"/>
+    <result property="description"      column="description"/>
+    <result property="publicBoard"      column="is_public"/>
+    <result property="columnConfig"     column="column_config"/>
+    <result property="keyPrefix"        column="key_prefix"/>
+    <result property="nextSeq"          column="next_seq"/>
+    <result property="slaBusinessHours" column="sla_business"/>
+    <result property="createdAt"        column="created_at"/>
+    <association property="owner" javaType="AppUser">
+      <id property="id" column="owner_id"/>
+    </association>
+  </resultMap>
+
+  <!-- 전체 결과맵: owner 를 사용자 요약(o_ 접두어)으로 조인 -->
+  <resultMap id="board" type="Board">
+    <id     property="id"               column="id"/>
+    <result property="name"             column="board_name"/>
+    <result property="description"      column="description"/>
+    <result property="publicBoard"      column="is_public"/>
+    <result property="columnConfig"     column="column_config"/>
+    <result property="keyPrefix"        column="key_prefix"/>
+    <result property="nextSeq"          column="next_seq"/>
+    <result property="slaBusinessHours" column="sla_business"/>
+    <result property="createdAt"        column="created_at"/>
+    <association property="owner" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="o_"/>
+  </resultMap>
+
+  <!-- 워크스페이스 + 만든 사람 조인 SELECT -->
+  <sql id="selectWithOwner">
+    SELECT <include refid="boardCols"/>,
+           <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_o"/>
+      FROM tb_board b
+      JOIN tb_app_user o ON o.id = b.owner_id
+  </sql>
+
+  <!-- ===================================================================
+       조회
+       =================================================================== -->
+
+  <!-- ID 로 한 건 조회 -->
+  <select id="selectById" resultMap="board">
+    <include refid="selectWithOwner"/>
+     WHERE b.id = #{id}
+  </select>
+
+  <!-- 전체, 이름순 (사이드바 목록) -->
+  <select id="selectAllOrderByName" resultMap="board">
+    <include refid="selectWithOwner"/>
+     ORDER BY b.board_name, b.id
+  </select>
+
+  <!-- 전체, ID 순 (기동 시 이관·접두어 중복 검사) -->
+  <select id="selectAll" resultMap="board">
+    <include refid="selectWithOwner"/>
+     ORDER BY b.id
+  </select>
+
+  <!-- 모든 사용자에게 공개된 워크스페이스 ID (접근 권한 계산) -->
+  <select id="selectPublicIds" resultType="long">
+    SELECT id
+      FROM tb_board
+     WHERE is_public = true
+  </select>
+
+  <!-- v2.0 이관 대상: 공개 여부가 아직 정해지지 않은 워크스페이스 -->
+  <select id="selectPublicNull" resultMap="board">
+    <include refid="selectWithOwner"/>
+     WHERE b.is_public IS NULL
+     ORDER BY b.id
+  </select>
+
+  <!-- 워크스페이스 수 -->
+  <select id="selectCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_board
+  </select>
+
+  <!-- ===================================================================
+       변경
+       =================================================================== -->
+
+  <!-- 워크스페이스 생성 -->
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO tb_board (
+           board_name, description, is_public, column_config,
+           key_prefix, next_seq, sla_business, owner_id, created_at
+    ) VALUES (
+           #{name}, #{description}, #{publicBoard}, #{columnConfig},
+           #{keyPrefix}, #{nextSeq}, #{slaBusinessHours}, #{owner.id}, #{createdAt}
+    )
+  </insert>
+
+  <!-- 설정 갱신 (owner, created_at 은 바꾸지 않음) -->
+  <update id="update">
+    UPDATE tb_board
+       SET board_name    = #{name},
+           description   = #{description},
+           is_public     = #{publicBoard},
+           column_config = #{columnConfig},
+           key_prefix    = #{keyPrefix},
+           next_seq      = #{nextSeq},
+           sla_business  = #{slaBusinessHours}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 다음 업무 번호만 갱신 (업무 키 발급 시) -->
+  <update id="updateNextSeq">
+    UPDATE tb_board
+       SET next_seq = #{nextSeq}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 특정 문구와 같은 설명을 비움 (예전 가져오기가 자동으로 넣은 'monday.com 에서 가져옴' 정리) -->
+  <update id="updateDescriptionNull">
+    UPDATE tb_board
+       SET description = NULL
+     WHERE description = #{description}
+  </update>
+
+  <!-- 워크스페이스 삭제 (하위 데이터는 서비스에서 먼저 지움) -->
+  <delete id="delete">
+    DELETE FROM tb_board
+     WHERE id = #{id}
+  </delete>
+
+</mapper>
