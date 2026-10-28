@@ -48,8 +48,8 @@ build:
     - if: $CI_COMMIT_BRANCH
   script:
     - java -version && node -v && mvn -v | head -1
-    - cd frontend && npm ci && npm run build && cd ..
-    # 이전 빌드의 index-*.js/css 가 남지 않도록 clean 후 패키징 (스테이징 서버용 테스트는 건너뜀)
+    - cd frontend && npm ci --no-audit --no-fund && npm run build && cd ..
+    # 이전 빌드의 index-*.js/css 가 남지 않도록 clean 후 패키징 (테스트는 건너뜀)
     - cd backend && mvn -q clean package -DskipTests && cd ..
     - mkdir -p dist/config
     - cp backend/target/isac-project.jar dist/

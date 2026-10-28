@@ -361,7 +361,7 @@ PostgreSQL 16에서 로그인·권한·CSRF·보드/업무 CRUD·드래그 이�
 
 **1. Runner (shell executor) 준비** — Runner 머신에 JDK 17, Node 20, Maven, git, ssh/scp 가 있어야 합니다. 프로젝트 › Settings › CI/CD › Runners 에서 등록하고 `Run untagged jobs` 를 켜거나 job 에 tags 를 맞추세요.
 
-**2. 배포 서버(10.1.17.116) 준비** — 배포 계정(예: `isac`)으로 JDK 17 설치, `~/isac-project/` 에 `config/application.yml` (DB 접속 정보 — CI 로는 넘기지 않고 서버에만 둡니다) 을 만들어 둡니다. 처음 한 번은 `sql/postgres-teamboard-schema.sql` 로 테이블을 만들고, 이후 버전 업은 `sql/postgres-upgrade-<버전>.sql` 을 jar 교체 전에 실행합니다. CI 전용 SSH 키를 만들어 공개키를 `~/.ssh/authorized_keys` 에 넣습니다 (`ssh-keygen -t ed25519 -f isac-ci -N ""`).
+**2. 배포 서버(10.1.17.116) 준비** — 배포 계정(예: `isac`)으로 JDK 17 설치, `/app/isac/isac-project/` 에 `config/application.yml` (DB 접속 정보와 `server.port: 18080` — CI 로는 넘기지 않고 서버에만 둡니다) 을 만들어 둡니다. 처음 한 번은 `sql/postgres-teamboard-schema.sql` 로 테이블을 만들고, 이후 버전 업은 `sql/postgres-upgrade-<버전>.sql` 을 jar 교체 전에 실행합니다. CI 전용 SSH 키를 만들어 공개키를 `~/.ssh/authorized_keys` 에 넣습니다 (`ssh-keygen -t ed25519 -f isac-ci -N ""`).
 
 **3. GitLab 변수** (Settings › CI/CD › Variables, Masked + Protected)
 
@@ -370,6 +370,6 @@ PostgreSQL 16에서 로그인·권한·CSRF·보드/업무 CRUD·드래그 이�
 | `DEPLOY_SSH_KEY` | 개인키 내용 (**Type: File**) |
 | `DEPLOY_USER` | 배포 계정 (예: `isac`) |
 | `DEPLOY_HOST` | `10.1.17.116` (기본값 있음) |
-| `DEPLOY_DIR` | 설치 경로 (기본 `/home/<DEPLOY_USER>/isac-project`) |
+| `DEPLOY_DIR` | 설치 경로 (기본 `/app/isac/isac-project`, 배포 계정에 쓰기 권한 필요) |
 
-**4. 서버에서 하는 일** — `server-restart.sh` 가 새 jar 를 `backup/` 에 이전 버전을 남기고 교체 → 기존 프로세스 종료 → `nohup java -jar` 기동 → 60초 안에 `http://127.0.0.1:8080/` 응답 확인. 응답이 없으면 이전 jar 로 자동 롤백하고 파이프라인을 실패로 표시합니다. 로그는 `logs/app.log`, pid 는 `isac-project.pid`. 수동 재시작도 같은 스크립트로: `./server-restart.sh ~/isac-project`.
+**4. 서버에서 하는 일** — `server-restart.sh` 가 새 jar 를 `backup/` 에 이전 버전을 남기고 교체 → 기존 프로세스 종료 → `nohup java -jar` 기동 → 60초 안에 `http://127.0.0.1:18080/` 응답 확인. 응답이 없으면 이전 jar 로 자동 롤백하고 파이프라인을 실패로 표시합니다. 로그는 `logs/app.log`, pid 는 `isac-project.pid`. 수동 재시작도 같은 스크립트로: `./server-restart.sh ~/isac-project`.
