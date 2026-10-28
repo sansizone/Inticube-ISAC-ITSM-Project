@@ -5,7 +5,7 @@
 #
 # GitLab › Settings › CI/CD › Variables 에 등록할 값 (모두 Masked, Protected 권장)
 #   DEPLOY_SSH_KEY   : 배포 서버에 접속할 개인키 (type: File). 서버 ~/.ssh/authorized_keys 에 공개키 등록
-#   DEPLOY_USER      : 배포 서버 로그인 계정 (예: isac)
+#   DEPLOY_USER      : 배포 서버 로그인 계정 (기본 isacstat — 다르면 변수로 덮어씀)
 #   DEPLOY_HOST      : 배포 서버 (기본 10.1.17.116)
 #   DEPLOY_DIR       : 서버의 설치 경로 (기본 /app/isac/isac-project — dist 구조 그대로, DEPLOY_USER 에게 쓰기 권한 필요)
 #
@@ -24,6 +24,7 @@ stages:
 
 variables:
   DEPLOY_HOST: "10.1.17.116"
+  DEPLOY_USER: "isacstat"
   DEPLOY_DIR: "/app/isac/isac-project"
   APP_PORT: "18080"
   MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository"
