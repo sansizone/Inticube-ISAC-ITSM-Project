@@ -6,5 +6,4 @@ logs/
 *.log
 .idea/
 .vscode/
-/config/
 .env.local
