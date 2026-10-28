@@ -73,11 +73,18 @@ build:
   needs: ["build"]
   before_script:
     - test -n "${DEPLOY_USER}" || { echo "DEPLOY_USER 변수가 없습니다"; exit 1; }
-    - test -f "${DEPLOY_SSH_KEY}" || { echo "DEPLOY_SSH_KEY(File 타입) 변수가 없습니다"; exit 1; }
-    - chmod 600 "${DEPLOY_SSH_KEY}"
+    - test -n "${DEPLOY_SSH_KEY:-}" || { echo "DEPLOY_SSH_KEY 변수가 없습니다 (Settings > CI/CD > Variables, Protected 해제 확인)"; exit 1; }
+    # File 타입이면 경로가, Variable 타입이면 키 내용이 들어옴 — 둘 다 처리.
+    # 붙여넣기 과정에서 생기는 CR(\r)·앞뒤 공백·마지막 줄바꿈 누락을 정리해야 ssh 가 "invalid format" 을 내지 않음
+    - if [ -f "${DEPLOY_SSH_KEY}" ]; then KEY_SRC="$(cat "${DEPLOY_SSH_KEY}")"; else KEY_SRC="${DEPLOY_SSH_KEY}"; fi
+    - printf '%s\n' "${KEY_SRC}" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' > "${CI_PROJECT_DIR}/.deploy_key"
+    - export DEPLOY_SSH_KEY="${CI_PROJECT_DIR}/.deploy_key" && chmod 600 "${DEPLOY_SSH_KEY}"
+    - ssh-keygen -y -f "${DEPLOY_SSH_KEY}" > /dev/null || { echo "DEPLOY_SSH_KEY 형식 오류 — 개인키 전체(BEGIN~END 줄)를 다시 넣어 주세요"; exit 1; }
     - mkdir -p ~/.ssh && ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
     - export SSH="ssh -i ${DEPLOY_SSH_KEY} -o BatchMode=yes -o ConnectTimeout=15 ${DEPLOY_USER}@${DEPLOY_HOST}"
     - export SCP="scp -i ${DEPLOY_SSH_KEY} -o BatchMode=yes"
+  after_script:
+    - rm -f "${CI_PROJECT_DIR}/.deploy_key"
   script:
     - echo "배포 대상 ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_DIR} (${CI_COMMIT_REF_NAME} ${CI_COMMIT_SHORT_SHA})"
     - $SSH "mkdir -p ${DEPLOY_DIR}/config ${DEPLOY_DIR}/data ${DEPLOY_DIR}/logs ${DEPLOY_DIR}/backup ${DEPLOY_DIR}/sql"
