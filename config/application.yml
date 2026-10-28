@@ -1,0 +1,23 @@
+# =====================================================================
+# TeamBoard 운영 DB(PostgreSQL) 설정
+#  - 이 파일은 teamboard.jar 와 같은 폴더의 config/ 안에 두세요.
+#  - start.bat / start.sh 로 실행하면 자동으로 이 설정을 사용합니다.
+#  - 비밀번호는 파일에 적지 말고 실행 시 입력하거나 환경변수 DB_PASSWORD 로 넘기는 것을 권장합니다.
+# =====================================================================
+spring:
+  datasource:
+    # 예) jdbc:postgresql://10.10.1.20:5432/teamboard
+    #     별도 스키마를 쓰는 경우: jdbc:postgresql://10.10.1.20:5432/업무DB?currentSchema=teamboard
+    url: jdbc:postgresql://10.1.15.181:5432/isacdb?currentSchema=teamboard
+    username: isac
+    password: Hansol123!
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 10000
+
+server:
+  port: 18080
+
+teamboard:
+  # 첨부파일 저장 경로 (DB 가 아닌 디스크에 저장되므로 백업 대상)
+  upload-dir: ./data/uploads
