@@ -26,3 +26,7 @@ CREATE TABLE IF NOT EXISTS tb_board_order (
     CONSTRAINT uk_board_order UNIQUE (user_id, board_id)
 );
 CREATE INDEX IF NOT EXISTS ix_board_order_user ON tb_board_order (user_id);
+
+-- 댓글 수정 시각 ('수정됨' 표시)
+ALTER TABLE tb_item_update  ADD COLUMN IF NOT EXISTS updated_at timestamp;
+ALTER TABLE tb_post_comment ADD COLUMN IF NOT EXISTS updated_at timestamp;

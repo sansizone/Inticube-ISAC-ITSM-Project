@@ -24,7 +24,8 @@ import static com.inticube.teamboard.dao.Rows.lng;
 @RequiredArgsConstructor
 @Transactional
 public class ColumnConvertService {
-    private static final Set<String> CONVERTIBLE = Set.of("TEXT", "DROPDOWN");
+    /** 연결 컬럼으로 바꿀 수 있는 유형: 연결을 뺀 전부 (사람·숫자 등도 값이 대상 항목 이름과 같으면 연결, 아니면 보관) */
+    private static final Set<String> CONVERTIBLE = Set.of("TEXT", "LONG_TEXT", "DROPDOWN", "PEOPLE", "NUMBER", "DATE", "DATETIME", "LINK");
     private final BoardPartsDao partsDao;
     private final ItemDao itemDao;
     private final AppUserDao userDao;
@@ -42,7 +43,7 @@ public class ColumnConvertService {
         BoardColumn c = partsDao.selectColumnById(columnId);
         if (c == null) throw ApiException.notFound("컬럼");
         guard.setManageChecked(c.getBoard());
-        if (!CONVERTIBLE.contains(c.getType())) throw ApiException.bad("텍스트·드롭다운 컬럼만 연결 컬럼으로 바꿀 수 있습니다.");
+        if (!CONVERTIBLE.contains(c.getType())) throw ApiException.bad("이미 연결 컬럼입니다.");
         if (!"ITEM".equals(c.getScope())) throw ApiException.bad("업무 컬럼만 바꿀 수 있습니다.");
         if (refBoardId == null) throw ApiException.bad("연결할 워크스페이스를 선택하세요.");
         if (refBoardId.equals(c.getBoard().getId())) throw ApiException.bad("같은 워크스페이스로는 연결할 수 없습니다.");
@@ -67,7 +68,7 @@ public class ColumnConvertService {
         List<String> miss = new ArrayList<>();
         Long whole = index.get(key(v));
         if (whole != null) { ids.add(whole); return Map.entry(ids, miss); }
-        for (String part : v.split(",")) {
+        for (String part : v.split("[,;\\n]")) {   // 사람 컬럼처럼 여러 값(쉼표·세미콜론·줄바꿈 구분)
             String p = part.trim();
             if (p.isEmpty()) continue;
             Long id = index.get(key(p));

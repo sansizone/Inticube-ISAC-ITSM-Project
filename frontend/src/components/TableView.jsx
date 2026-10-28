@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { StatusChip, AssigneeChip, DateChip, PriorityChip, DutyChip, TypeChip, SlaBadge, VersionChip, ProgressCell, HoursCell } from './cells.jsx'
 import { fmtHours, itemKey, blockedBy } from '../sla.js'
 import { Empty, Popover, usePopover } from './common.jsx'
 import { HeaderMenu, AddColumnButton } from './BoardFilters.jsx'
-import { boardColumns, columnConfig } from './Fields.jsx'
+import { boardColumns, columnConfig, builtinLabel } from './Fields.jsx'
 import { api } from '../api.js'
 import { Icon } from './icons.jsx'
-import { FieldView, columnsFor, viewColumns } from './Fields.jsx'
+import { FieldView, FieldEditor, distinctValues, columnsFor, viewColumns } from './Fields.jsx'
 import { isOverdue } from '../util.js'
 
 const PAGE = 100
@@ -48,7 +48,9 @@ export default function TableView({ board, items, statusById, ops, users, filter
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
   }
   const resetWidth = (key) => setWidths((w) => { const n = { ...w }; delete n[key]; if (canManage) api.put(`/api/boards/${board.id}/column-config`, { config: JSON.stringify({ ...columnConfig(board), widths: n }) }).catch(() => {}); else { try { localStorage.setItem(lsKey, JSON.stringify(n)) } catch { /* 무시 */ } } return n })
-  const wStyle = (key) => widths[key] ? { width: widths[key], minWidth: widths[key], maxWidth: widths[key] } : undefined
+  // 너비를 직접 정하지 않은 컬럼은 헤더 이름이 잘리지 않을 만큼 최소 너비를 준다 (한글 1자 ≈ 0.85rem + 메뉴·여백)
+  const wStyle = (key, label) => widths[key] ? { width: widths[key], minWidth: widths[key], maxWidth: widths[key] }
+    : label ? { minWidth: `${Math.min(16, Math.max(6, [...label].length * 0.85 + 3))}rem` } : undefined
   const grip = (key) => <span className="th-resize" onMouseDown={(e) => startResize(key, e)} onDoubleClick={() => resetWidth(key)} title="끌어서 너비 조절 · 두 번 눌러 초기화" aria-hidden="true" />
   const [collapsed, setCollapsed] = useState({})
   const [open, setOpen] = useState({})
@@ -59,6 +61,13 @@ export default function TableView({ board, items, statusById, ops, users, filter
   const update = (id) => (p) => ops.updateItem(id, p).catch(() => {})
   const colSpan = 3 + cols.length + (canManage ? 1 : 0)
 
+  // 드롭다운·사람 후보 값은 컬럼별로 한 번만 계산
+  const optCache = useMemo(() => new Map(), [board.items]) // eslint-disable-line
+  const optionsOf = (col) => {
+    if (col.type !== 'DROPDOWN' && col.type !== 'PEOPLE') return []
+    if (!optCache.has(col.id)) optCache.set(col.id, distinctValues(board.items, col))
+    return optCache.get(col.id)
+  }
   const cell = (c, it, sub) => {
     const st = statusById[it.statusId]
     switch (c.key) {
@@ -75,12 +84,14 @@ export default function TableView({ board, items, statusById, ops, users, filter
       case 'start': return <DateChip value={it.startDate} label={c.label} compact onChange={(v) => ops.updateItem(it.id, { startDate: v }).catch(() => {})} />
       case 'priority': return <PriorityChip item={it} onChange={update(it.id)} />
       case 'duty': return sub ? null : <DutyChip item={it} index={dutyIndex} onChange={update(it.id)} compact />
-      case 'group': return <span className="small">{groupName[it.groupId]}</span>
+      case 'group': return sub ? <span className="small muted">{groupName[it.groupId]}</span> : <GroupCell board={board} value={it.groupId} onChange={(g) => ops.updateItem(it.id, { groupId: g }).catch(() => {})} />
       case 'created': return <span className="muted small nowrap">{it.createdAt ? it.createdAt.slice(0, 10) : ''}</span>
       case 'updated': return <span className="muted small nowrap">{it.updatedAt ? it.updatedAt.slice(0, 16).replace('T', ' ') : ''}</span>
       default: {
         const col = sub ? subColByName[c.col.name] : c.col
-        return col ? <FieldView col={col} value={it.values?.[col.id]} compact /> : null
+        if (!col) return null
+        return <FieldEditor compact col={col} value={it.values?.[col.id] || ''} users={users} targetName={board.refBoards?.[col.refBoardId]}
+          options={optionsOf(col)} onSave={(v) => ops.updateItem(it.id, { values: { [col.id]: v } }).catch(() => {})} />
       }
     }
   }
@@ -118,11 +129,10 @@ export default function TableView({ board, items, statusById, ops, users, filter
         <table className="tv">
           <thead>
             <tr>
-              <th className="sticky-a" style={wStyle('key')}>{header ? <HeaderMenu colKey="key" label="키" board={board} users={users} statusById={statusById} {...header} onHide={null} /> : '키'}{grip('key')}</th>
-              <th className="sticky-b" style={{ ...wStyle('name'), ...(widths.key ? { left: widths.key } : {}) }}>{header ? <HeaderMenu colKey="name" label="업무명" board={board} users={users} statusById={statusById} {...header} onHide={null} /> : '업무명'}{grip('name')}</th>
+              <th className="sticky-a" style={wStyle('key')}>{header ? <HeaderMenu colKey="key" label={builtinLabel(board, 'key')} board={board} users={users} statusById={statusById} {...header} onHide={null} /> : builtinLabel(board, 'key')}{grip('key')}</th>
+              <th className="sticky-b" style={{ ...wStyle('name'), ...(widths.key ? { left: widths.key } : {}) }}>{header ? <HeaderMenu colKey="name" label={builtinLabel(board, 'name')} board={board} users={users} statusById={statusById} {...header} onHide={null} /> : builtinLabel(board, 'name')}{grip('name')}</th>
               {cols.map((c) => (
-                <th key={c.key} title={c.label} style={wStyle(c.key)}>
-                  {!c.builtin && c.col.type === 'RELATION' && <Icon name="link" size={11} />}
+                <th key={c.key} title={c.label} style={wStyle(c.key, c.label)}>
                   {header ? <HeaderMenu colKey={c.key} label={c.label} col={c.col} board={board} users={users} statusById={statusById} {...header} onHide={() => header.onHide(c.key)} onSettings={canManage ? onColumnSettings : null} onAddRight={canManage ? (created) => addRight(c.key, created) : null} /> : c.label}
                   {grip(c.key)}
                 </th>
@@ -189,6 +199,30 @@ export function RowMenu({ sub, onOpen, onMove, onDelete }) {
             <button className="menu-row" onClick={() => { pop.close(); onOpen() }}><Icon name="eye" size={14} /> 열기</button>
             {!sub && onMove && <button className="menu-row" onClick={() => { pop.close(); onMove() }}><Icon name="move" size={14} /> 다른 워크스페이스로 이동</button>}
             <button className="menu-row danger" onClick={() => { pop.close(); onDelete() }}><Icon name="trash" size={14} /> 삭제</button>
+          </div>
+        </Popover>
+      )}
+    </>
+  )
+}
+
+/** 표의 그룹 칸: 눌러서 다른 그룹으로 이동 */
+function GroupCell({ board, value, onChange }) {
+  const pop = usePopover()
+  const g = board.groups.find((x) => x.id === value)
+  return (
+    <>
+      <button type="button" className="cell-edit" onClick={pop.open} title="눌러서 그룹 변경">
+        {g ? <span className="small row gap-xs"><span className="group-dot" style={{ background: g.color }} />{g.name}</span> : <span className="cell-empty" />}
+      </button>
+      {pop.anchor && (
+        <Popover anchor={pop.anchor} onClose={pop.close} width={220}>
+          <div className="menu">
+            {board.groups.map((x) => (
+              <button key={x.id} className={`menu-row ${x.id === value ? 'active' : ''}`} onClick={() => { pop.close(); if (x.id !== value) onChange(x.id) }}>
+                <span className="group-dot" style={{ background: x.color }} /> <span className="grow ellipsis">{x.name}</span>
+              </button>
+            ))}
           </div>
         </Popover>
       )}

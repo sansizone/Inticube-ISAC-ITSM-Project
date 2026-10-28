@@ -129,7 +129,9 @@ public final class Dtos {
 
     /** 워크스페이스(= 보드) 요약. myRole: OWNER / MEMBER / null */
     public record BoardSummary(Long id, String name, String description, String ownerName,
-                               long itemCount, long doneCount, boolean isPublic, long memberCount, String myRole, boolean favorite) {}
+                               long itemCount, long doneCount, boolean isPublic, long memberCount, String myRole, boolean favorite,
+                               /** 진행률(%) 표시 여부 — 고객사·솔루션 같은 목록형 워크스페이스는 끔 (컬럼 설정 JSON 의 showProgress) */
+                               boolean showProgress) {}
 
     public record BoardMemberDto(Long userId, String username, String name, String department, boolean active, String role) {}
     public record BoardMemberItem(Long userId, String role) {}
@@ -172,9 +174,9 @@ public final class Dtos {
 
     // ---------- 아이템 상세 ----------
     /** authorName: 외부에서 가져온 댓글의 원래 작성자 이름 (없으면 null) */
-    public record UpdateDto(Long id, Long parentId, UserSummary author, String authorName, String content, boolean system, LocalDateTime createdAt) {
+    public record UpdateDto(Long id, Long parentId, UserSummary author, String authorName, String content, boolean system, LocalDateTime createdAt, LocalDateTime updatedAt) {
         public static UpdateDto of(ItemUpdate u) {
-            return new UpdateDto(u.getId(), u.getParentId(), UserSummary.of(u.getAuthor()), u.getAuthorName(), u.getContent(), u.isSystem(), u.getCreatedAt());
+            return new UpdateDto(u.getId(), u.getParentId(), UserSummary.of(u.getAuthor()), u.getAuthorName(), u.getContent(), u.isSystem(), u.getCreatedAt(), u.getUpdatedAt());
         }
     }
 
@@ -244,10 +246,10 @@ public final class Dtos {
         }
     }
 
-    public record PostCommentDto(Long id, Long parentId, UserSummary author, String content, boolean deleted, LocalDateTime createdAt) {
+    public record PostCommentDto(Long id, Long parentId, UserSummary author, String content, boolean deleted, LocalDateTime createdAt, LocalDateTime updatedAt) {
         public static PostCommentDto of(PostComment c) {
             return new PostCommentDto(c.getId(), c.getParentId(), c.isDeleted() ? null : UserSummary.of(c.getAuthor()),
-                    c.isDeleted() ? "" : c.getContent(), c.isDeleted(), c.getCreatedAt());
+                    c.isDeleted() ? "" : c.getContent(), c.isDeleted(), c.getCreatedAt(), c.isDeleted() ? null : c.getUpdatedAt());
         }
     }
 

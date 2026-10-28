@@ -125,7 +125,7 @@ function UserForm({ user, isSelf, onClose, onDone }) {
     <Modal title={user ? '사용자 수정' : '사용자 추가'} onClose={onClose}>
       <form onSubmit={submit}>
         <label className="field"><span>아이디</span>
-          <input className="input" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} required pattern="[A-Za-z0-9._\-]{3,50}" title="영문/숫자/._- 3~50자" autoFocus={!user} /></label>
+          <input className="input" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} required pattern="[A-Za-z0-9._\-]{3,50}|[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+" maxLength={50} title="영문/숫자/._- 3~50자 또는 이메일 주소" autoFocus={!user} /></label>
         <label className="field"><span>이름</span><input className="input" value={f.name} maxLength={50} onChange={(e) => setF({ ...f, name: e.target.value })} required /></label>
         <label className="field"><span>부서 (선택)</span><input className="input" value={f.department || ''} maxLength={100} onChange={(e) => setF({ ...f, department: e.target.value })} /></label>
         <label className="field"><span>권한</span>
@@ -150,7 +150,7 @@ function BulkActivate({ users, onClose, onDone }) {
   const [busy, setBusy] = useState(false)
   const set = (id, patch) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)))
   const placeholder = rows.filter((r) => /^m\d{4}$/.test(r.username)).length
-  const bad = rows.filter((r) => !/^[A-Za-z0-9._-]{3,50}$/.test(r.username.trim()))
+  const bad = rows.filter((r) => !/^(?:[A-Za-z0-9._-]{3,50}|(?=.{3,50}$)[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)$/.test(r.username.trim()))
   const submit = async () => {
     setBusy(true)
     try { onDone(await api.post('/api/admin/users/bulk-activate', { users: rows.map((r) => ({ id: r.id, username: r.username.trim(), department: r.department })) })) }
@@ -178,7 +178,7 @@ function BulkActivate({ users, onClose, onDone }) {
           </tbody>
         </table>
       </div>
-      {bad.length > 0 && <div className="form-error" style={{ marginTop: 8 }}>아이디는 영문/숫자/._- 3~50자만 가능합니다: {bad.map((r) => r.name).join(', ')}</div>}
+      {bad.length > 0 && <div className="form-error" style={{ marginTop: 8 }}>아이디는 영문/숫자/._- 3~50자 또는 이메일 주소만 가능합니다: {bad.map((r) => r.name).join(', ')}</div>}
     </Modal>
   )
 }

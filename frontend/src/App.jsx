@@ -115,7 +115,7 @@ function Shell({ me, setMe }) {
   const ctx = useMemo(() => ({
     me, setMe, users, boards, categories, unread, logout,
     refreshBoards, refreshUsers, refreshCategories, refreshUnread,
-    mentionNames: new Set(users.map((u) => u.username)),
+    mentionNames: new Set(users.flatMap((u) => [u.username, u.name, `${u.name}(${(u.username || '').split('@')[0]})`])),
     openItem: (boardId, itemId) => navigate(`/board/${boardId}?item=${itemId}`),
     openSidebar: () => setSidebarOpen((v) => {
       // 데스크톱: 접혀 있으면(=toggled) 펼침. 모바일: 열기
@@ -151,10 +151,6 @@ function Shell({ me, setMe }) {
           <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />
           <main className="main-panel">
             <div className="main-content">{page}</div>
-            <footer className="footer-admin">
-              <span>Copyright © 인티큐브 ISAC-PROJECT {new Date().getFullYear()}</span>
-              <span className="footer-links"><a href="#/posts">게시판</a><span>·</span><a href="#/inbox">알림함</a></span>
-            </footer>
           </main>
         </div>
       </div>

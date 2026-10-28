@@ -7,3 +7,9 @@ logs/
 .idea/
 .vscode/
 .env.local
+
+# 작업 중 파일 전송용 임시 폴더 (커밋 대상 아님)
+_upd/
+
+# 화면 빌드 결과물 — CI 가 npm run build 로 새로 만듦 (로컬에서 jar/18080 으로 보려면 npm run build)
+backend/src/main/resources/static/

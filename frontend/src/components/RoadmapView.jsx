@@ -74,7 +74,6 @@ export default function RoadmapView({ board, items, statusById, ops, users, setB
               <div key={it.id} className={`rm-row ${statusById[it.statusId]?.done ? 'is-done' : ''}`}>
                 <StatusChip item={it} statusById={statusById} statuses={board.statuses} onChange={(p) => ops.updateItem(it.id, p).catch(() => {})} variant="icon" />
                 <span className="lrow-id">{itemKey(board, it)}</span>
-                <TypeChip item={it} types={board.types} onChange={(p) => ops.updateItem(it.id, p).catch(() => {})} variant="icon" />
                 <button className="lrow-name" onClick={() => ops.openItem(it.id)}>{it.name}</button>
                 <span className="lrow-meta">
                   {it.progress != null && <span className="small muted">{it.progress}%</span>}

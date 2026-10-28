@@ -12,7 +12,6 @@ export const VIEW_TYPES = [
   { type: 'timeline', label: '타임라인', icon: 'timeline' },
   { type: 'roadmap', label: '로드맵', icon: 'map' },
   { type: 'dashboard', label: '인사이트', icon: 'chart' },
-  { type: 'duties', label: '담당업무', icon: 'tree' },
   { type: 'wiki', label: '위키', icon: 'book' },
 ]
 export const VIEW_META = Object.fromEntries(VIEW_TYPES.map((v) => [v.type, v]))

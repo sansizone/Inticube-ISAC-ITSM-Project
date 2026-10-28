@@ -18,6 +18,10 @@ import java.util.*;
 @RequiredArgsConstructor
 @Transactional
 public class UserService {
+    /** 아이디 규칙: 영문·숫자·._- 3~50자, 또는 이메일 주소(회사 계정, 50자 이내) */
+    public static final String USERNAME_PATTERN =
+            "[A-Za-z0-9._-]{3,50}|(?=.{3,50}$)[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+";
+
     private final AppUserDao userDao;
     private final PasswordEncoder encoder;
     private final TotpService totp;
@@ -60,8 +64,8 @@ public class UserService {
 
     public TempPasswordResponse insertUser(UserCreateRequest req) {
         String username = req.username().trim();
-        if (!username.matches("[A-Za-z0-9._-]{3,50}"))
-            throw ApiException.bad("아이디는 영문/숫자/._- 3~50자만 사용할 수 있습니다.");
+        if (!username.matches(USERNAME_PATTERN))
+            throw ApiException.bad("아이디는 영문/숫자/._- 3~50자 또는 이메일 주소(50자 이내)만 사용할 수 있습니다.");
         if (userDao.selectExistsByUsername(username))
             throw new ApiException(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다.");
         String temp = PasswordPolicy.temporary();
@@ -86,8 +90,8 @@ public class UserService {
             throw ApiException.bad("최소 1명의 활성 관리자가 필요합니다.");
         if (req.username() != null && !req.username().isBlank() && !req.username().trim().equals(u.getUsername())) {
             String username = req.username().trim();
-            if (!username.matches("[A-Za-z0-9._-]{3,50}"))
-                throw ApiException.bad("아이디는 영문/숫자/._- 3~50자만 사용할 수 있습니다.");
+            if (!username.matches(USERNAME_PATTERN))
+                throw ApiException.bad("아이디는 영문/숫자/._- 3~50자 또는 이메일 주소(50자 이내)만 사용할 수 있습니다.");
             if (userDao.selectExistsByUsername(username))
                 throw new ApiException(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다.");
             u.setUsername(username);
@@ -110,8 +114,8 @@ public class UserService {
         for (BulkActivateItem it : list) {
             AppUser u = getUser(it.id());
             String username = it.username() == null || it.username().isBlank() ? u.getUsername() : it.username().trim();
-            if (!username.matches("[A-Za-z0-9._-]{3,50}"))
-                throw ApiException.bad(u.getName() + ": 아이디는 영문/숫자/._- 3~50자만 사용할 수 있습니다.");
+            if (!username.matches(USERNAME_PATTERN))
+                throw ApiException.bad(u.getName() + ": 아이디는 영문/숫자/._- 3~50자 또는 이메일 주소(50자 이내)만 사용할 수 있습니다.");
             if (!seen.add(username.toLowerCase()))
                 throw ApiException.bad(u.getName() + ": 아이디 '" + username + "' 가 목록 안에서 중복됩니다.");
             if (!username.equals(u.getUsername()) && userDao.selectExistsByUsername(username))

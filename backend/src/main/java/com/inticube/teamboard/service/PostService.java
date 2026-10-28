@@ -26,9 +26,10 @@ import static com.inticube.teamboard.dao.Rows.lngOr0;
 @RequiredArgsConstructor
 @Transactional
 public class PostService {
-    private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50})");
+    private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50}(?:@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)?)");  // @아이디 또는 @이메일아이디
 
     private final PostDao postDao;
+    private final MentionResolver mentions;
     private final AppUserDao userDao;
     private final NotificationDao notiDao;
     private final NotificationService notifier;
@@ -250,6 +251,25 @@ public class PostService {
         return PostCommentDto.of(c);
     }
 
+    /** 댓글 수정 (작성자 본인만). 새로 추가된 @언급에만 알림 */
+    public PostCommentDto updateComment(Long commentId, String content, UserPrincipal me) {
+        PostComment c = postDao.selectCommentById(commentId);
+        if (c == null || c.isDeleted()) throw ApiException.notFound("댓글");
+        if (!c.getAuthor().getId().equals(me.id())) throw ApiException.forbidden();
+        Set<Long> before = new HashSet<>();
+        for (AppUser x : mentions.getMentionedUsers(c.getContent())) before.add(x.getId());
+        c.setContent(content.trim());
+        c.setUpdatedAt(LocalDateTime.now());
+        postDao.updateCommentContent(c);
+        Post p = post(c.getPost().getId());
+        AppUser actor = user(me.id());
+        for (AppUser u : mentions.getMentionedUsers(c.getContent()))
+            if (!before.contains(u.getId()))
+                notifier.insertNotifyPost(u, actor, NotificationType.POST_MENTION,
+                        actor.getName() + "님이 '" + p.getTitle() + "' 댓글에서 회원님을 언급했습니다.", p);
+        return PostCommentDto.of(c);
+    }
+
     public void deleteComment(Long commentId, UserPrincipal me) {
         PostComment c = postDao.selectCommentById(commentId);
         if (c == null) throw ApiException.notFound("댓글");
@@ -266,11 +286,7 @@ public class PostService {
     // ---------- 내부 ----------
     private Set<Long> notifyMentions(Post p, String text, AppUser actor, String where) {
         Set<Long> notified = new HashSet<>();
-        Set<String> names = new LinkedHashSet<>();
-        Matcher m = MENTION.matcher(text);
-        while (m.find()) names.add(m.group(1));
-        if (names.isEmpty()) return notified;
-        for (AppUser u : userDao.selectActiveByUsernames(names)) {
+        for (AppUser u : mentions.getMentionedUsers(text)) {
             notifier.insertNotifyPost(u, actor, NotificationType.POST_MENTION,
                     actor.getName() + "님이 '" + p.getTitle() + "' " + where + "에서 회원님을 언급했습니다.", p);
             notified.add(u.getId());

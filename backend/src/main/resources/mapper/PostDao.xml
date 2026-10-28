@@ -253,6 +253,7 @@
     <result property="content"   column="content"/>
     <result property="deleted"   column="is_deleted"/>
     <result property="createdAt" column="created_at"/>
+    <result property="updatedAt" column="updated_at"/>
     <association property="post" javaType="Post">
       <id property="id" column="post_id"/>
     </association>
@@ -260,7 +261,7 @@
   </resultMap>
 
   <sql id="commentSelect">
-    SELECT c.id, c.post_id, c.parent_id, c.content, c.is_deleted, c.created_at,
+    SELECT c.id, c.post_id, c.parent_id, c.content, c.is_deleted, c.created_at, c.updated_at,
            <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>
       FROM tb_post_comment c
       JOIN tb_app_user au ON au.id = c.author_id
@@ -308,6 +309,14 @@
     UPDATE tb_post_comment
        SET content    = #{content},
            is_deleted = #{deleted}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 댓글 내용 수정 (수정 시각 기록 → '수정됨') -->
+  <update id="updateCommentContent">
+    UPDATE tb_post_comment
+       SET content    = #{content},
+           updated_at = #{updatedAt}
      WHERE id = #{id}
   </update>
 

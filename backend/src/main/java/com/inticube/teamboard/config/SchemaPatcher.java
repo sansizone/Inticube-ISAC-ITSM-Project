@@ -43,6 +43,14 @@ public class SchemaPatcher implements ApplicationRunner {
             log.warn("DB 종류 확인 실패: {}", e.getMessage());
             return;
         }
+        if (product.contains("postgres")) {
+            // 3.1: 댓글 수정 시각 — 업그레이드 SQL 을 아직 안 돌린 DB 도 기동되도록 없을 때만 추가
+            for (String sql : new String[]{
+                    "ALTER TABLE tb_item_update ADD COLUMN IF NOT EXISTS updated_at timestamp",
+                    "ALTER TABLE tb_post_comment ADD COLUMN IF NOT EXISTS updated_at timestamp"}) {
+                try { jdbc.execute(sql); } catch (Exception e) { log.warn("컬럼 보강 실패 ({}): {}", sql, e.getMessage()); }
+            }
+        }
         for (String[] tc : ENUM_COLUMNS) {
             try {
                 for (String name : findCheckConstraints(product, tc[0], tc[1])) {

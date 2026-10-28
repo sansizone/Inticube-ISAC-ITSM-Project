@@ -19,6 +19,8 @@ public interface ItemExtraDao {
     int batchInsertUpdates(@Param("list") List<ItemUpdate> list);
     List<Map<String, Object>> selectUpdateIdByExternal(@Param("ids") Collection<Long> itemIds);
     int updateParent(@Param("id") Long id, @Param("parentId") Long parentId);
+    ItemUpdate selectLastSystemUpdate(@Param("itemId") Long itemId);
+    int updateUpdateContent(ItemUpdate u);
     int deleteUpdate(@Param("id") Long id);
     int deleteUpdatesByParent(@Param("parentId") Long parentId);
     int deleteUpdatesByItems(@Param("ids") Collection<Long> ids);

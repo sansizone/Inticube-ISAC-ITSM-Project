@@ -41,12 +41,13 @@
     <result property="externalId" column="external_id"/>
     <result property="system"     column="is_system"/>
     <result property="createdAt"  column="created_at"/>
+    <result property="updatedAt"  column="updated_at"/>
     <association property="author" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="au_"/>
     <association property="item"   resultMap="itemRef" columnPrefix="i_"/>
   </resultMap>
 
   <sql id="updateSelect">
-    SELECT u.id, u.content, u.parent_id, u.author_name, u.external_id, u.is_system, u.created_at,
+    SELECT u.id, u.content, u.parent_id, u.author_name, u.external_id, u.is_system, u.created_at, u.updated_at,
            <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>,
            <include refid="itemRefCols"/>
       FROM tb_item_update u
@@ -116,6 +117,23 @@
   <update id="updateParent">
     UPDATE tb_item_update
        SET parent_id = #{parentId}
+     WHERE id = #{id}
+  </update>
+
+  <!-- 업무의 마지막 활동 기록 한 건 (연속 변경을 한 줄로 묶을 때) -->
+  <select id="selectLastSystemUpdate" resultMap="update">
+    <include refid="updateSelect"/>
+     WHERE u.item_id   = #{itemId}
+       AND u.is_system = true
+     ORDER BY u.id DESC
+     LIMIT 1
+  </select>
+
+  <!-- 댓글 내용 수정 (수정 시각 기록 → '수정됨') -->
+  <update id="updateUpdateContent">
+    UPDATE tb_item_update
+       SET content    = #{content},
+           updated_at = #{updatedAt}
      WHERE id = #{id}
   </update>
 

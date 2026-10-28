@@ -64,7 +64,6 @@ export default function KanbanView({ board, items, statusById, ops, dutyIndex })
                     </div>
                     <div className="kcard-title">{it.name}</div>
                     <div className="kcard-meta">
-                      {it.dutyId != null && dutyIndex.byId.get(it.dutyId) && <span className="mini-chip" title={dutyIndex.path(it.dutyId)}><Icon name="tree" size={12} />{dutyIndex.byId.get(it.dutyId).name}</span>}
                       {it.priority && <span className="mini-chip"><PriorityIcon value={it.priority} size={12} /></span>}
                       {it.dueDate && <span className={`mini-chip ${overdue ? 'danger' : ''}`}><Icon name="calendar" size={12} />{friendlyDate(it.dueDate)}</span>}
                       {it.commentCount > 0 && <span className="mini-chip"><Icon name="chat" size={12} />{it.commentCount}</span>}

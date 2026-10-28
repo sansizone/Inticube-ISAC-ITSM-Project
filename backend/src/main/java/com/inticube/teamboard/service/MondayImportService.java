@@ -75,6 +75,8 @@ public class MondayImportService {
     private final ItemDao itemDao;
     private final ItemExtraDao extraDao;
     private final AppUserDao userDao;
+    private final ColumnConvertService convertService;
+    private final AccessGuard guard;
 
     // ───────────────────────── 결과/요청 타입 ─────────────────────────
 
@@ -109,6 +111,8 @@ public class MondayImportService {
                            boolean reply, String postId, String parentPostId, boolean hasFiles) {}
     private static final class Parsed {
         String title;
+        /** 업무명으로 쓰는 열의 원래 제목 (예: '솔루션명') → 워크스페이스의 업무명 컬럼 이름으로 */
+        String nameHeader;
         final List<PGroup> groups = new ArrayList<>();
         final List<String> headers = new ArrayList<>();
         final List<String> subHeaders = new ArrayList<>();
@@ -221,6 +225,9 @@ public class MondayImportService {
         // 3) 사용자 정의 컬럼
         Map<String, BoardColumn> itemCols = createColumns(board, p.headers, colMap, itemVals, "ITEM", 1);
         Map<String, BoardColumn> subCols = createColumns(board, p.subHeaders, subMap, subVals, "SUBITEM", itemCols.size() + 1);
+        // 표·목록에는 엑셀에 있던 열만: 매핑되지 않은 기본 컬럼은 숨기고, 순서는 엑셀 열 순서대로
+        board.setColumnConfig(getImportColumnConfig(p.headers, colMap, itemCols, p.nameHeader));
+        boardDao.update(board);
 
         List<BoardStatus> boardStatuses = new ArrayList<>(partsDao.selectStatusesByBoard(board.getId()));
         Map<String, BoardStatus> statusByLabel = new HashMap<>();
@@ -261,12 +268,101 @@ public class MondayImportService {
         }
         insertValues(valueRows);
         boardService.batchAssignKeys(board);
+        // 다른 워크스페이스 이름과 같은 열(예: '솔루션' ↔ '솔루션관리')은 그 워크스페이스에서 고르는 연결 컬럼으로
+        warnings.addAll(batchLinkColumns(board, itemCols, me));
 
         if (badDates[0] > 0) warnings.add("날짜로 읽지 못한 값 " + badDates[0] + "건이 있습니다 (기본 필드는 비워 두었습니다).");
         int files = (int) p.updates.stream().filter(PUpdate::hasFiles).count();
         if (files > 0) warnings.add("첨부파일이 있던 업데이트 " + files + "건: 엑셀에는 파일이 들어 있지 않아 파일은 옮겨지지 않았습니다(본문은 이관됨).");
         return new Result(board.getId(), board.getName(), Math.max(1, gs.size()), itemCount, subCount, updCount,
                 itemCols.size() + subCols.size(), newStatuses, createdUsers, warnings);
+    }
+
+    /** 워크스페이스 이름 끝의 흔한 접미어 / 열 이름 끝의 흔한 접미어 (비교용 줄기만 남김) */
+    private static final Pattern BOARD_SUFFIX = Pattern.compile("(관리|목록|리스트|현황|정보|대장)$");
+    private static final Pattern HEADER_SUFFIX = Pattern.compile("(명칭|명|이름|코드|구분)$");
+
+    private static String stem(String s, Pattern suffix) {
+        String t = s == null ? "" : s.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+        String u = suffix.matcher(t).replaceAll("");
+        return u.length() >= 2 ? u : t;
+    }
+
+    /**
+     * 텍스트·드롭다운 열 이름이 다른 워크스페이스 이름과 같으면(접미어 무시) 그 워크스페이스 업무를 고르는 연결 컬럼으로 바꾼다.
+     * 값의 절반 이상이 대상 워크스페이스의 업무명(또는 표시 컬럼)과 일치할 때만 바꾸고, 결과는 안내 문구로 돌려준다.
+     */
+    private List<String> batchLinkColumns(Board board, Map<String, BoardColumn> itemCols, UserPrincipal me) {
+        List<String> notes = new ArrayList<>();
+        Set<Long> visible = guard.getVisibleBoardIds();
+        List<Board> others = boardDao.selectAllOrderByName().stream()
+                .filter(b -> !b.getId().equals(board.getId()) && AccessGuard.isVisible(b, visible)).toList();
+        for (var e : itemCols.entrySet()) {
+            BoardColumn c = e.getValue();
+            if (!"TEXT".equals(c.getType()) && !"DROPDOWN".equals(c.getType())) continue;
+            String hs = stem(e.getKey(), HEADER_SUFFIX);
+            List<Board> cands = others.stream().filter(b -> stem(b.getName(), BOARD_SUFFIX).equals(hs)).limit(5).toList();
+            Board best = null;
+            long bestHit = 0, rows = 0;
+            for (Board b : cands) {
+                try {
+                    var pv = convertService.getPreview(c.getId(), b.getId(), null);
+                    long hit = pv.matchedRows() + pv.partialRows();
+                    if (hit > bestHit) { best = b; bestHit = hit; rows = pv.rows(); }
+                } catch (ApiException ex) { /* 권한 없음 등은 후보에서 제외 */ }
+            }
+            if (best == null || rows == 0 || bestHit * 2 < rows) continue;
+            convertService.updateConvert(c.getId(), best.getId(), null, false, me);
+            notes.add("'" + e.getKey() + "' 열은 '" + best.getName() + "' 워크스페이스에서 고르는 연결 컬럼으로 만들었습니다 (" + bestHit + "/" + rows + "건 일치"
+                    + (bestHit < rows ? ", 못 찾은 값은 원래 글자로 따로 보관" : "") + ").");
+        }
+        return notes;
+    }
+
+    /** 화면의 기본 컬럼 키 (frontend Fields.jsx BUILTIN_COLUMNS 와 같은 목록) */
+    private static final List<String> BUILTIN_KEYS = List.of("type", "status", "assignee", "sla", "due", "start", "priority", "duty",
+            "version", "progress", "estimate", "spent", "group", "created", "resolved", "updated");
+
+    /** 엑셀 열 매핑 → 기본 컬럼 키 (이름·설명·무시 열은 컬럼이 아님) */
+    private static List<String> builtinKeysOf(Field f) {
+        if (f == null) return List.of();
+        return switch (f) {
+            case STATUS -> List.of("status");
+            case ASSIGNEE -> List.of("assignee");
+            case START -> List.of("start");
+            case DUE -> List.of("due");
+            case TIMELINE -> List.of("start", "due");
+            case PRIORITY -> List.of("priority");
+            case CREATED -> List.of("created");
+            default -> List.of();
+        };
+    }
+
+    /**
+     * 가져온 워크스페이스의 컬럼 설정(JSON): 엑셀에 있던 기본 필드·사용자 정의 컬럼만 보이고 엑셀 열 순서를 따른다.
+     * { "hidden": [엑셀에 없던 기본 컬럼], "order": [엑셀 열 순서의 키], "known": [모든 기본 컬럼] }
+     */
+    private static String getImportColumnConfig(List<String> headers, Map<String, Field> colMap, Map<String, BoardColumn> itemCols, String nameHeader) {
+        LinkedHashSet<String> order = new LinkedHashSet<>();
+        for (String h : headers) {
+            Field f = colMap.get(h);
+            order.addAll(builtinKeysOf(f));
+            BoardColumn c = itemCols.get(h);
+            if (c != null) order.add("c:" + c.getId());
+        }
+        List<String> hidden = BUILTIN_KEYS.stream().filter(k -> !order.contains(k)).toList();
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        cfg.put("hidden", hidden);
+        cfg.put("order", new ArrayList<>(order));
+        cfg.put("known", BUILTIN_KEYS);
+        // 업무명 열 제목이 '이름·Name·업무명' 같은 일반 이름이 아니면 그대로 업무명 컬럼 이름으로 (예: 솔루션명)
+        if (nameHeader != null && !nameHeader.isBlank() && !NAME_KEYS.contains(norm(nameHeader)))
+            cfg.put("labels", Map.of("name", nameHeader.trim().length() > 30 ? nameHeader.trim().substring(0, 30) : nameHeader.trim()));
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(cfg);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            return null;   // 설정 없이 기본 표시 (가져오기 자체는 계속)
+        }
     }
 
     private record Ctx(Board board, Map<String, BoardStatus> statusByLabel, List<BoardStatus> boardStatuses, List<String> newStatuses,
@@ -514,6 +610,7 @@ public class MondayImportService {
                 subHeader = null;
                 nameCol = 0;
                 for (int i = 0; i < c.size(); i++) if (NAME_KEYS.contains(norm(c.get(i)))) { nameCol = i; break; }
+                if (p.nameHeader == null && nameCol < c.size()) p.nameHeader = c.get(nameCol);
                 for (String h : c) addHeader(p.headers, h);
                 if (group == null) { group = new PGroup("할 일"); p.groups.add(group); }
                 continue;

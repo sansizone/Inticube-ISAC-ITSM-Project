@@ -3,9 +3,12 @@ import React, { useRef, useState } from 'react'
 // 의존성 없는 안전한 마크다운 렌더러 (innerHTML 미사용 → XSS 없음)
 const SAFE_URL = /^(https?:\/\/|mailto:|#\/)/i
 
+/** 언급 표기: 이름(아이디) — 아이디는 메일이면 @ 앞부분까지. 동명이인 구분용 */
+export const mentionLabel = (u) => `${u.name}(${(u.username || '').split('@')[0]})`
+
 function inline(text, keyBase, mentionNames) {
   const out = []
-  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>()]+)|(@[A-Za-z0-9._-]{3,50})/g
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>()]+)|(@(?:[가-힣A-Za-z]{1,20}\([A-Za-z0-9._%+@-]{2,64}\)|[A-Za-z0-9._-]{3,50}(?:@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)?|[가-힣]{2,20}))/g
   let last = 0, m, k = 0
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(text.slice(last, m.index))
@@ -19,7 +22,14 @@ function inline(text, keyBase, mentionNames) {
       const [, label, url] = t.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
       out.push(SAFE_URL.test(url) ? <a key={key} href={url} target={url.startsWith('#') ? undefined : '_blank'} rel="noopener noreferrer">{label}</a> : label)
     } else if (m[6]) out.push(<a key={key} href={t} target="_blank" rel="noopener noreferrer">{t}</a>)
-    else if (m[7]) out.push(!mentionNames || mentionNames.has(t.slice(1)) ? <span key={key} className="mention">{t}</span> : t)
+    else if (m[7]) {
+      // @이름 뒤에 조사가 붙은 경우(@홍길동님) 아는 이름까지만 강조
+      const tok = t.slice(1)
+      let hit = !mentionNames || mentionNames.has(tok) ? tok : null
+      for (let n = tok.length - 1; !hit && n >= 2; n--) if (mentionNames.has(tok.slice(0, n))) hit = tok.slice(0, n)
+      if (hit) { out.push(<span key={key} className="mention">@{hit}</span>); if (hit.length < tok.length) out.push(tok.slice(hit.length)) }
+      else out.push(t)
+    }
     last = m.index + t.length
   }
   if (last < text.length) out.push(text.slice(last))
@@ -74,6 +84,29 @@ export function Markdown({ text, mentionNames, className = '' }) {
 }
 
 /** 마크다운 에디터: 툴바 + 작성/미리보기 탭 */
+/** 댓글 수정 상자: 기존 내용으로 시작, 저장/취소 (Ctrl+Enter 저장, Esc 취소) */
+export function CommentEditBox({ initial, users, mentionNames, onSave, onCancel }) {
+  const [text, setText] = useState(initial || '')
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!text.trim() || busy) return
+    if (text.trim() === (initial || '').trim()) { onCancel(); return }
+    setBusy(true)
+    try { await onSave(text) } finally { setBusy(false) }
+  }
+  return (
+    <div className="comment-box comment-edit">
+      <MarkdownEditor value={text} onChange={setText} rows={3} users={users} mentionNames={mentionNames} autoFocus
+        onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save(); if (e.key === 'Escape') onCancel() }} />
+      <div className="form-actions">
+        <span className="hint grow">Ctrl+Enter 로 저장</span>
+        <button className="btn btn-sm" onClick={onCancel}>취소</button>
+        <button className="btn btn-sm btn-primary" onClick={save} disabled={busy || !text.trim()}>{busy ? '저장 중…' : '저장'}</button>
+      </div>
+    </div>
+  )
+}
+
 export function MarkdownEditor({ value, onChange, placeholder, rows = 12, mentionNames, onKeyDown, autoFocus, users }) {
   const [tab, setTab] = useState('write')
   const ref = useRef(null)
@@ -107,9 +140,11 @@ export function MarkdownEditor({ value, onChange, placeholder, rows = 12, mentio
   const pick = (u) => {
     const el = ref.current
     const caret = el.selectionStart
-    const nv = value.slice(0, mention.start) + '@' + u.username + ' ' + value.slice(caret)
+    // 언급은 이름(아이디)로 넣는다 (@홍길동(gd.hong)) — 동명이인 구분, 서버가 아이디로 찾아 알림
+    const label = mentionLabel(u)
+    const nv = value.slice(0, mention.start) + '@' + label + ' ' + value.slice(caret)
     onChange(nv)
-    const p = mention.start + u.username.length + 2
+    const p = mention.start + label.length + 2
     setMention(null)
     setTimeout(() => { el.focus(); el.setSelectionRange(p, p) }, 0)
   }
@@ -153,7 +188,7 @@ export function MarkdownEditor({ value, onChange, placeholder, rows = 12, mentio
             <div className="mention-list">
               {candidates.map((u) => (
                 <button type="button" key={u.id} className="menu-row" onMouseDown={(e) => { e.preventDefault(); pick(u) }}>
-                  <span>{u.name}</span><span className="muted small">@{u.username}</span>
+                  <span>{u.name} <span className="muted">({(u.username || '').split('@')[0]})</span></span>{u.department && <span className="muted small">{u.department}</span>}
                 </button>
               ))}
             </div>

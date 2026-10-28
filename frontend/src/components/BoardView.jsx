@@ -19,7 +19,7 @@ import { Icon } from './icons.jsx'
 import { useFavorite } from './Sidebar.jsx'
 import { ViewTabs, ColumnPicker, parseViewConfig } from './Views.jsx'
 import { MoveItemModal } from './Workspace.jsx'
-import { rememberRefs, columnsFor } from './Fields.jsx'
+import { rememberRefs, columnsFor, columnConfig } from './Fields.jsx'
 
 export default function BoardView({ boardId, view, itemParam }) {
   const { me, users, refreshBoards } = useApp()
@@ -40,7 +40,7 @@ export default function BoardView({ boardId, view, itemParam }) {
   const pendingFilters = useRef(null)
 
   const lastLoad = useRef(0)
-  const load = useCallback(() => { lastLoad.current = Date.now(); return api.get(`/api/boards/${boardId}`).then((b) => { rememberRefs(b); setBoard(b); setError(null) })
+  const load = useCallback(() => { lastLoad.current = Date.now(); return api.get(`/api/boards/${boardId}`).then((b) => { rememberRefs(b); setBoard({ ...b, views: (b.views || []).filter((v) => v.type !== 'duties') }); setError(null) })
     .catch((e) => setError(e.message)) }, [boardId])
 
   useEffect(() => { load(); try { localStorage.setItem('tb.lastBoard', String(boardId)) } catch { /* 무시 */ } }, [load]) // eslint-disable-line
@@ -190,8 +190,8 @@ export default function BoardView({ boardId, view, itemParam }) {
   const resetView = () => { setFilters(saved.filters); setSort(saved.sort); setHidden(saved.hidden) }
   const done = topItems.filter((i) => statusById[i.statusId]?.done).length
   const extraAvail = [
-    ...(board.types?.some((t) => t.resolveHours || t.responseHours) ? ['sla'] : []), 'priority',
-    ...(board.versions?.length ? ['version'] : []), ...(dutyIndex.byId.size > 0 ? ['duty'] : []),
+    'priority',
+    ...(board.versions?.length ? ['version'] : []),
     ...(board.groups.length > 1 ? ['groups'] : []), ...(columnsFor(board, 'ITEM').some((c) => c.type !== 'LONG_TEXT') ? ['fields'] : []),
     'watch', ...(board.links?.some((l) => l.type === 'BLOCKS') ? ['blocked'] : []),
   ]
@@ -202,7 +202,9 @@ export default function BoardView({ boardId, view, itemParam }) {
       <PageHeader title={<BoardSwitcher board={board} view={viewKey} />} icon="kanban"
         subtitle={<>
           {board.description && <span>{board.description}</span>}
-          <span className="phs-stat"><span className="ring ring-light" style={{ '--p': topItems.length ? Math.floor(done / topItems.length * 100) : 0 }} /> 진행률 {topItems.length ? Math.floor(done / topItems.length * 100) : 0}% · 업무 {topItems.length}건{board.items.length > topItems.length ? ` (하위 ${board.items.length - topItems.length}건)` : ''} · {board.isPublic ? <><Icon name="globe" size={12} /> 모든 사용자 공개</> : <><Icon name="lock" size={12} /> 멤버 전용</>}</span>
+          <span className="phs-stat">{columnConfig(board).showProgress
+            ? <><span className="ring ring-light" style={{ '--p': topItems.length ? Math.floor(done / topItems.length * 100) : 0 }} /> 진행률 {topItems.length ? Math.floor(done / topItems.length * 100) : 0}% · 업무 {topItems.length}건</>
+            : <>{topItems.length}건</>}{board.items.length > topItems.length ? ` (하위 ${board.items.length - topItems.length}건)` : ''} · {board.isPublic ? <><Icon name="globe" size={12} /> 모든 사용자 공개</> : <><Icon name="lock" size={12} /> 멤버 전용</>}</span>
         </>}
         actions={<>
           <div className="avatar-stack" title="담당자">
@@ -230,9 +232,7 @@ export default function BoardView({ boardId, view, itemParam }) {
                 <span className="filter-sep" />
                 <StatusFilter value={filters.status} onChange={(v) => setF({ status: v })} statuses={board.statuses} />
                 <PersonFilter value={filters.assignee} onChange={(v) => setF({ assignee: v })} users={users} me={me} />
-                {board.types?.length > 0 && <TypeFilter value={filters.type} onChange={(v) => setF({ type: v })} types={board.types} />}
                 <DueFilter value={filters.due} onChange={(v) => setF({ due: v })} />
-                {extraShown.includes('sla') && <SlaFilter value={filters.sla} onChange={(v) => setF({ sla: v })} />}
                 {extraShown.includes('priority') && <PriorityFilter value={filters.priority} onChange={(v) => setF({ priority: v })} />}
                 {extraShown.includes('version') && <VersionFilter value={filters.version} onChange={(v) => setF({ version: v })} versions={board.versions || []} />}
                 {extraShown.includes('duty') && <DutyFilter value={filters.duty} onChange={(v) => setF({ duty: v })} index={dutyIndex} />}

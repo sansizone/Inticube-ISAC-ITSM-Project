@@ -19,7 +19,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
 
   // ---- v3.0 유지보수 지표 ----
   const typeById = Object.fromEntries((board.types || []).map((t) => [t.id, t]))
-  const hasSla = (board.types || []).some((t) => t.resolveHours || t.responseHours)
+  const hasSla = false // SLA 는 화면에서 제거됨
   const slaRows = items.map((i) => ({ i, s: slaOf(i, typeById[i.typeId], board) })).filter((x) => x.s)
   const slaOpen = slaRows.filter((x) => !x.s.done && x.s.state !== 'met')
   const slaBreach = slaOpen.filter((x) => x.s.state === 'breach')
@@ -39,9 +39,6 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
   for (let k = 11; k >= 0; k--) { const d = new Date(now.getFullYear(), now.getMonth() - k, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`) }
   const trend = months.map((m) => ({ m, created: items.filter((i) => (i.createdAt || '').startsWith(m)).length, resolved: items.filter((i) => (i.resolvedAt || '').startsWith(m)).length }))
   const trendMax = Math.max(1, ...trend.map((t) => Math.max(t.created, t.resolved)))
-  const byType = (board.types || []).map((t) => ({ t, list: items.filter((i) => i.typeId === t.id) })).filter((x) => x.list.length)
-  const noType = items.filter((i) => i.typeId == null).length
-  const typeMax = Math.max(1, ...byType.map((x) => x.list.length), noType)
 
   // 담당자별 업무량 (상태별 누적)
   const byPerson = new Map()
@@ -128,29 +125,6 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
           </div>
         </div>
 
-        {(byType.length > 0 || noType > 0) && (
-          <div className="panel">
-            <div className="panel-head"><h3>유형별 업무</h3><span className="muted small">진한 부분 = 완료</span></div>
-            <div className="hbars">
-              {byType.map(({ t, list }) => {
-                const d = list.filter((i) => statusById[i.statusId]?.done).length
-                const br = list.filter((i) => { const x = slaOf(i, t, board); return x && x.state === 'breach' }).length
-                return (
-                  <div key={t.id} className="hbar-row" title={`${t.name}: ${list.length}개 중 ${d}개 완료${br ? `, SLA 초과 ${br}` : ''}`}>
-                    <span className="hbar-label ellipsis">{t.name}</span>
-                    <span className="hbar-track"><span className="stack" style={{ width: `${(list.length / typeMax) * 100}%` }}>
-                      {d > 0 && <span style={{ flex: d, background: t.color }} />}
-                      {list.length - d > 0 && <span style={{ flex: list.length - d, background: `color-mix(in srgb, ${t.color} 30%, var(--surface))` }} />}
-                    </span></span>
-                    <span className="hbar-value">{list.length}{br ? <span className="text-danger small"> ({br})</span> : null}</span>
-                  </div>
-                )
-              })}
-              {noType > 0 && <div className="hbar-row"><span className="hbar-label muted">유형 없음</span><span className="hbar-track"><span className="hbar" style={{ width: `${(noType / typeMax) * 100}%`, background: 'var(--surface-3)' }} /></span><span className="hbar-value">{noType}</span></div>}
-            </div>
-          </div>
-        )}
-
         {hasSla && slaOpen.length > 0 && (
           <div className="panel">
             <div className="panel-head"><h3 className={slaBreach.length ? 'text-danger' : ''}>SLA 확인 필요</h3><span className="muted small">초과 → 임박 순</span></div>
@@ -191,7 +165,6 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
           </div>
         )}
 
-        {dutyIndex && dutyIndex.byId.size > 0 && <DutyPanel items={items} index={dutyIndex} statusById={statusById} />}
 
         <div className="panel">
           <div className="panel-head"><h3>그룹별 진행률</h3></div>

@@ -29,9 +29,10 @@ import static com.inticube.teamboard.dao.Rows.*;
 @RequiredArgsConstructor
 @Transactional
 public class ItemService {
-    private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50})");
+    private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50}(?:@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)?)");  // @아이디 또는 @이메일아이디
 
     private final ItemDao itemDao;
+    private final MentionResolver mentions;
     private final ItemExtraDao extraDao;
     private final BoardPartsDao partsDao;
     private final BoardDutyDao dutyDao;
@@ -264,7 +265,10 @@ public class ItemService {
         i.setUpdatedAt(LocalDateTime.now());
         itemDao.update(i);
         after.forEach(Runnable::run);
-        for (String log : logs) insertSystemLog(i, actorFull, log);
+        // 활동 기록: 반복 업무 안내는 그대로, 값 변경은 '생성 직후 제외 + 연속 변경 묶기'
+        List<String> changes = new ArrayList<>();
+        for (String log : logs) { if (log.startsWith("반복 업무")) insertSystemLog(i, actorFull, log); else changes.add(log); }
+        insertChangeLog(i, actorFull, changes);
         return BoardService.toDto(i, 0, 0, changedValues);
     }
 
@@ -540,11 +544,8 @@ public class ItemService {
         String where = "[" + i.getBoard().getName() + "] '" + i.getName() + "'";
         String preview = content.length() > 60 ? content.substring(0, 60) + "…" : content;
         Set<Long> notified = new HashSet<>();
-        Set<String> mentioned = new LinkedHashSet<>();
-        Matcher m = MENTION.matcher(content);
-        while (m.find()) mentioned.add(m.group(1));
-        if (!mentioned.isEmpty()) {
-            for (AppUser target : userDao.selectActiveByUsernames(mentioned)) {
+        {
+            for (AppUser target : mentions.getMentionedUsers(content)) {
                 notifier.insertNotify(target, author, NotificationType.MENTION, author.getName() + "님이 " + where + "에서 회원님을 언급했습니다: " + preview, i);
                 notified.add(target.getId());
             }
@@ -554,6 +555,27 @@ public class ItemService {
                 notifier.insertNotify(target, author, NotificationType.COMMENT, author.getName() + "님이 " + where + "에 업데이트를 남겼습니다: " + preview, i);
         }
         maint.insertNotifyWatchers(i, author, notified, NotificationType.WATCH, author.getName() + "님이 " + where + "에 업데이트를 남겼습니다: " + preview);
+        return UpdateDto.of(u);
+    }
+
+    /** 댓글 수정 (작성자 본인만). 새로 추가된 @언급에만 알림 */
+    public UpdateDto updateUpdate(Long updateId, String content, UserPrincipal me) {
+        ItemUpdate u = extraDao.selectUpdateById(updateId);
+        if (u == null) throw ApiException.notFound("댓글");
+        if (u.isSystem()) throw ApiException.bad("활동 기록은 수정할 수 없습니다.");
+        if (!u.getAuthor().getId().equals(me.id())) throw ApiException.forbidden();
+        Set<Long> before = new HashSet<>();
+        for (AppUser x : mentions.getMentionedUsers(u.getContent())) before.add(x.getId());
+        u.setContent(content.trim());
+        u.setUpdatedAt(LocalDateTime.now());
+        extraDao.updateUpdateContent(u);
+        Item i = getItem(u.getItem().getId());
+        AppUser author = getUser(me.id());
+        String where = "[" + i.getBoard().getName() + "] '" + i.getName() + "'";
+        String preview = u.getContent().length() > 60 ? u.getContent().substring(0, 60) + "…" : u.getContent();
+        for (AppUser target : mentions.getMentionedUsers(u.getContent()))
+            if (!before.contains(target.getId()))
+                notifier.insertNotify(target, author, NotificationType.MENTION, author.getName() + "님이 " + where + "에서 회원님을 언급했습니다: " + preview, i);
         return UpdateDto.of(u);
     }
 
@@ -642,6 +664,72 @@ public class ItemService {
     }
 
     // ---------- 내부 유틸 ----------
+    /** 만든 사람이 생성 후 이 시간 안에 채우는 값은 '업무를 만들었습니다'에 포함된 것으로 보고 기록하지 않음 */
+    private static final long INITIAL_SETUP_MINUTES = 10;
+    /** 같은 사람이 이 시간 안에 연달아 바꾼 값은 한 줄로 묶음 */
+    private static final long MERGE_MINUTES = 5;
+    private static final String SEP = " · ";
+
+    /**
+     * 값 변경 활동 기록.
+     * - 업무를 만든 사람이 생성 10분 안에 바꾼 값은 기록하지 않음 (처음 여러 칸을 채우는 단계)
+     * - 같은 사람이 5분 안에 연달아 바꾸면 직전 기록 한 줄에 합침. 같은 항목을 또 바꾸면 처음 값 → 마지막 값으로,
+     *   결국 원래 값으로 돌아왔으면 그 항목은 빼고, 남은 게 없으면 줄 자체를 지움
+     */
+    private void insertChangeLog(Item i, AppUser actor, List<String> changes) {
+        if (changes.isEmpty()) return;
+        LocalDateTime now = LocalDateTime.now();
+        if (i.getCreatedBy() != null && i.getCreatedBy().getId().equals(actor.getId())
+                && i.getCreatedAt() != null && i.getCreatedAt().isAfter(now.minusMinutes(INITIAL_SETUP_MINUTES))) return;
+        ItemUpdate last = extraDao.selectLastSystemUpdate(i.getId());
+        if (last != null && last.getAuthor() != null && last.getAuthor().getId().equals(actor.getId())) {
+            LocalDateTime at = last.getUpdatedAt() != null ? last.getUpdatedAt() : last.getCreatedAt();
+            LinkedHashMap<String, String[]> merged = parseChanges(last.getContent());
+            if (at != null && at.isAfter(now.minusMinutes(MERGE_MINUTES)) && merged != null) {
+                for (String c : changes) {
+                    String[] f = splitChange(c);
+                    if (f == null) { merged = null; break; }
+                    String[] prev = merged.get(f[0]);
+                    if (prev == null) merged.put(f[0], new String[]{f[1], f[2]});
+                    else if (prev[0].equals(f[2])) merged.remove(f[0]);      // 원래 값으로 되돌림
+                    else prev[1] = f[2];
+                }
+                if (merged != null) {
+                    if (merged.isEmpty()) { extraDao.deleteUpdate(last.getId()); return; }
+                    StringBuilder sb = new StringBuilder();
+                    for (var e : merged.entrySet()) {
+                        if (sb.length() > 0) sb.append(SEP);
+                        sb.append(e.getKey()).append(": ").append(e.getValue()[0]).append(" → ").append(e.getValue()[1]);
+                    }
+                    last.setContent(sb.toString());
+                    last.setUpdatedAt(now);
+                    extraDao.updateUpdateContent(last);
+                    return;
+                }
+            }
+        }
+        insertSystemLog(i, actor, String.join(SEP, changes));
+    }
+
+    /** "항목: 이전 → 이후" → [항목, 이전, 이후] (형식이 아니면 null) */
+    private static String[] splitChange(String s) {
+        int c = s.indexOf(": "), a = s.indexOf(" → ", c + 2);
+        if (c <= 0 || a < 0) return null;
+        return new String[]{s.substring(0, c), s.substring(c + 2, a), s.substring(a + 3)};
+    }
+
+    /** 값 변경 기록 한 줄 → 항목별 [이전, 이후]. 값 변경 기록이 아니면(파일 첨부 등) null */
+    private static LinkedHashMap<String, String[]> parseChanges(String content) {
+        if (content == null || content.isBlank()) return null;
+        LinkedHashMap<String, String[]> m = new LinkedHashMap<>();
+        for (String part : content.split(java.util.regex.Pattern.quote(SEP))) {
+            String[] f = splitChange(part);
+            if (f == null) return null;
+            m.put(f[0], new String[]{f[1], f[2]});
+        }
+        return m;
+    }
+
     private void insertSystemLog(Item i, AppUser actor, String text) {
         ItemUpdate log = new ItemUpdate();
         log.setItem(i);
