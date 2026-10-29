@@ -12,7 +12,7 @@ const TYPE_ICONS = ['inbox', 'alert', 'edit', 'chat', 'repeat', 'wrench', 'bolt'
 
 export default function BoardSettings({ board, onClose, onSaved, onDeleted, onColumnsChanged, initialTab }) {
   const can = board.canManage
-  const [tab, setTab] = useState(!can ? 'members' : ['columns', 'members', 'types'].includes(initialTab) ? initialTab : 'general')
+  const [tab, setTab] = useState(!can ? 'members' : ['columns', 'members', 'types', 'automations'].includes(initialTab) ? initialTab : 'general')
   const [keyPrefix, setKeyPrefix] = useState(board.keyPrefix || '')
   const [slaBusiness, setSlaBusiness] = useState(!!board.slaBusinessHours)
   const [showProgress, setShowProgress] = useState(columnConfig(board).showProgress)
@@ -63,10 +63,12 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
         {can && <button className={tab === 'general' ? 'active' : ''} onClick={() => setTab('general')}>기본·상태</button>}
         {can && <button className={tab === 'types' ? 'active' : ''} onClick={() => setTab('types')}>유형</button>}
         {can && <button className={tab === 'columns' ? 'active' : ''} onClick={() => setTab('columns')}>컬럼</button>}
+        {can && <button className={tab === 'automations' ? 'active' : ''} onClick={() => setTab('automations')}>자동화</button>}
         <button className={tab === 'members' ? 'active' : ''} onClick={() => setTab('members')}>멤버·공개</button>
       </div>
       {tab === 'columns' && <ColumnSettings board={board} onChanged={onColumnsChanged || onSaved} confirm={confirm} toast={toast} />}
       {tab === 'members' && <MembersEditor board={board} onSaved={onSaved} />}
+      {tab === 'automations' && <AutomationSettings board={board} toast={toast} onSaved={onSaved} />}
       {tab === 'types' && <TypeSettings board={board} toast={toast} confirm={confirm} onSaved={onSaved} />}
       {tab === 'general' && <>
       <label className="field"><span>워크스페이스 이름</span><input className="input" value={name} maxLength={100} onChange={(e) => setName(e.target.value)} /></label>
@@ -155,6 +157,7 @@ export function RelationTarget({ board, refBoardId, refColumnId, onChange }) {
  * 업무 컬럼: 기본 컬럼(상태·담당자·마감일…)과 사용자 정의 컬럼을 한 목록에서 이름·순서·표시 여부 편집.
  */
 function ColumnSettings({ board, onChanged, confirm, toast }) {
+  const { boards } = useApp()
   const [scope, setScope] = useState('ITEM')
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState('TEXT')
@@ -256,6 +259,23 @@ function ColumnSettings({ board, onChanged, confirm, toast }) {
                       if (rb !== c.col.refBoardId && !(await confirm('연결 대상을 바꾸면 이 컬럼에 입력된 연결 값이 모두 지워집니다. 계속할까요?', { okText: '변경' }))) return
                       saveCol(c.col, { refBoardId: rb, refColumnId: rc })
                     }} />
+                </div>
+              )}
+              {!c.builtin && c.col.type === 'PEOPLE' && (
+                <div className="col-edit-ref">
+                  <div className="rel-target">
+                    <Icon name="users" size={14} className="muted" />
+                    <span className="muted small nowrap">후보</span>
+                    <select className="input input-sm" value={cfg.peopleSources[c.col.id] || ''} aria-label="사람 후보 워크스페이스"
+                      onChange={(e) => {
+                        const ps = { ...cfg.peopleSources }
+                        if (e.target.value) ps[c.col.id] = Number(e.target.value); else delete ps[c.col.id]
+                        saveCfg({ peopleSources: ps })
+                      }}>
+                      <option value="">등록된 사용자만</option>
+                      {boards.filter((b) => b.id !== board.id).map((b) => <option key={b.id} value={b.id}>등록된 사용자 + {b.name}</option>)}
+                    </select>
+                  </div>
                 </div>
               )}
             </div>
@@ -404,6 +424,74 @@ function TypeSettings({ board, toast, confirm, onSaved }) {
         <button className="chip-btn" onClick={() => setList((l) => [...l, { id: null, name: '새 유형', color: PALETTE[(l.length * 3) % PALETTE.length], icon: 'tag', responseHours: null, resolveHours: null, isDefault: l.length === 0 }])}>＋ 유형 추가</button>
         <span className="grow" />
         <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>유형 저장</button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 자동화 규칙: '상태가 ○○가 되면 → 그룹 이동 / 다른 워크스페이스로 이동'
+ * 규칙은 서버에서 상태가 바뀔 때 실행 (표·칸반·상세 어디서 바꿔도 동일)
+ */
+function AutomationSettings({ board, toast, onSaved }) {
+  const { boards } = useApp()
+  const [rules, setRules] = useState(() => (columnConfig(board).automations || []).map((r) => ({ ...r })))
+  const [targets, setTargets] = useState({})   // 대상 워크스페이스 id → 그룹 목록
+  const [busy, setBusy] = useState(false)
+  const loadGroups = (id) => {
+    if (!id || targets[id]) return
+    api.get(`/api/boards/${id}`).then((b) => setTargets((t) => ({ ...t, [id]: b.groups || [] }))).catch(() => setTargets((t) => ({ ...t, [id]: [] })))
+  }
+  useEffect(() => { rules.filter((r) => r.action === 'board').forEach((r) => loadGroups(r.boardId)) }, []) // eslint-disable-line
+  const patch = (i, p) => setRules((rs) => rs.map((r, k) => (k === i ? { ...r, ...p } : r)))
+  const save = async () => {
+    setBusy(true)
+    try { await api.put(`/api/boards/${board.id}/automations`, { rules }); toast('자동화 규칙을 저장했습니다.', 'success'); onSaved && onSaved() }
+    catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
+  }
+  const others = boards.filter((b) => b.id !== board.id)
+  return (
+    <div className="auto-settings">
+      <p className="hint">상태가 바뀌면 자동으로 그룹이나 워크스페이스를 옮깁니다. 다른 워크스페이스로 옮길 때는 <b>이름이 같은 컬럼·상태</b>끼리 값이 이어집니다.</p>
+      {rules.length === 0 && <p className="muted small">규칙이 없습니다.</p>}
+      {rules.map((r, i) => (
+        <div key={i} className="auto-rule">
+          <span className="auto-word">상태가</span>
+          <select className="input input-sm" value={r.statusId || ''} aria-label="조건 상태" onChange={(e) => patch(i, { statusId: Number(e.target.value) || null })}>
+            <option value="">상태 선택</option>
+            {board.statuses.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+          </select>
+          <span className="auto-word">(으)로 바뀌면</span>
+          <select className="input input-sm" value={r.action || ''} aria-label="동작" onChange={(e) => patch(i, { action: e.target.value, groupId: null, boardId: null })}>
+            <option value="">동작 선택</option>
+            <option value="group">그룹 이동</option>
+            <option value="board">다른 워크스페이스로 이동</option>
+          </select>
+          {r.action === 'group' && (
+            <select className="input input-sm" value={r.groupId || ''} aria-label="이동할 그룹" onChange={(e) => patch(i, { groupId: Number(e.target.value) || null })}>
+              <option value="">그룹 선택</option>
+              {board.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          )}
+          {r.action === 'board' && <>
+            <select className="input input-sm" value={r.boardId || ''} aria-label="이동할 워크스페이스" onChange={(e) => { const id = Number(e.target.value) || null; patch(i, { boardId: id, groupId: null }); loadGroups(id) }}>
+              <option value="">워크스페이스 선택</option>
+              {others.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            {r.boardId && (
+              <select className="input input-sm" value={r.groupId || ''} aria-label="대상 그룹" onChange={(e) => patch(i, { groupId: Number(e.target.value) || null })}>
+                <option value="">같은 이름 그룹 (없으면 첫 그룹)</option>
+                {(targets[r.boardId] || []).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            )}
+          </>}
+          <button className="icon-btn" title="규칙 삭제" aria-label="규칙 삭제" onClick={() => setRules((rs) => rs.filter((_, k) => k !== i))}><Icon name="trash" size={14} /></button>
+        </div>
+      ))}
+      <div className="row gap-sm" style={{ marginTop: 12 }}>
+        <button className="btn btn-sm" onClick={() => setRules((rs) => [...rs, { statusId: null, action: 'group', groupId: null, boardId: null }])}><Icon name="plus" size={13} /> 규칙 추가</button>
+        <span className="grow" />
+        <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>규칙 저장</button>
       </div>
     </div>
   )

@@ -44,6 +44,15 @@
      FETCH FIRST 50 ROWS ONLY
   </select>
 
+  <!-- 홈 '댓글 · 멘션': 댓글/멘션 종류만 최근 20건 -->
+  <select id="selectRecentTalk" resultMap="noti">
+    <include refid="selectAll"/>
+     WHERE recipient_id = #{userId}
+       AND noti_type IN ('COMMENT', 'MENTION', 'POST_COMMENT', 'POST_MENTION')
+     ORDER BY created_at DESC, id DESC
+     FETCH FIRST 20 ROWS ONLY
+  </select>
+
   <!-- 안 읽은 알림 수 (상단 배지) -->
   <select id="selectUnreadCount" resultType="long">
     SELECT COUNT(*)

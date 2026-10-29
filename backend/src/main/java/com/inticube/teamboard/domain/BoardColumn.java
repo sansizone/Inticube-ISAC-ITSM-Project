@@ -11,8 +11,8 @@ import java.util.Set;
  */
 @Getter @Setter
 public class BoardColumn {
-    /** TEXT 한 줄 / LONG_TEXT 여러 줄 / NUMBER / DATE(yyyy-MM-dd) / DATETIME(yyyy-MM-dd HH:mm) / PEOPLE(이름, 쉼표 구분) / DROPDOWN / LINK / RELATION(다른 워크스페이스 업무 연결, 값 = 업무 ID 쉼표 구분) */
-    public static final Set<String> TYPES = Set.of("TEXT", "LONG_TEXT", "NUMBER", "DATE", "DATETIME", "PEOPLE", "DROPDOWN", "LINK", "RELATION");
+    /** TEXT 한 줄 / LONG_TEXT 여러 줄 / NUMBER / DATE(yyyy-MM-dd) / DATETIME(yyyy-MM-dd HH:mm) / PEOPLE(이름, 쉼표 구분) / DROPDOWN / LINK / PHONE(전화번호, 하이픈 형식) / RELATION(다른 워크스페이스 업무 연결, 값 = 업무 ID 쉼표 구분) */
+    public static final Set<String> TYPES = Set.of("TEXT", "LONG_TEXT", "NUMBER", "DATE", "DATETIME", "PEOPLE", "DROPDOWN", "LINK", "PHONE", "RELATION");
     /** ITEM = 업무용 컬럼, SUBITEM = 하위 업무용 컬럼 */
     public static final Set<String> SCOPES = Set.of("ITEM", "SUBITEM");
 

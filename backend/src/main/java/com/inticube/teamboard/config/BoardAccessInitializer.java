@@ -89,6 +89,8 @@ public class BoardAccessInitializer implements ApplicationRunner {
         // v3.0: 키 접두어·업무 번호·기본 유형·로드맵/위키 탭
         Set<Long> withTypes = new HashSet<>(partsDao.selectBoardIdsWithTypes());
         int keyed = 0, typed = 0, tabs = 0;
+        Integer roadmapTabs = jdbc.queryForObject("select count(*) from tb_board_view where view_type in ('roadmap', 'wiki')", Integer.class);
+        boolean tabsMigrated = roadmapTabs != null && roadmapTabs > 0;
         for (Board b : all) {
             if (b.getKeyPrefix() == null || b.getKeyPrefix().isBlank()) {
                 b.setKeyPrefix(boardService.getUniquePrefix(BoardService.getSuggestedPrefix(b.getName(), b.getId())));
@@ -97,6 +99,8 @@ public class BoardAccessInitializer implements ApplicationRunner {
             keyed += boardService.batchAssignKeys(b);
             if (!withTypes.contains(b.getId())) { boardService.insertDefaultTypes(b); typed++; }
             List<BoardView> vs = partsDao.selectViewsByBoard(b.getId());
+            // 로드맵·위키 탭은 v3.0 이관 때 한 번만 추가 (이미 이관된 DB 에서 사용자가 지운 탭을 되살리지 않도록)
+            if (tabsMigrated) continue;
             for (String[] nv : new String[][]{{"로드맵", "roadmap"}, {"위키", "wiki"}}) {
                 if (vs.stream().noneMatch(v -> v.getType().equals(nv[1]))) {
                     BoardView v = new BoardView();

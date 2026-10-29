@@ -66,7 +66,7 @@ export default function CommandPalette({ onClose }) {
               if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)) }
               if (e.key === 'Enter' && results[hi]) { e.preventDefault(); run(results[hi]) }
             }} />
-          <kbd className="kbd">ESC</kbd>
+          <button type="button" className="kbd kbd-btn" onClick={onClose} title="닫기 (Esc)" aria-label="검색 닫기">ESC</button>
         </div>
         <div className="cmd-list" ref={listRef}>
           {results.map((r, i) => {

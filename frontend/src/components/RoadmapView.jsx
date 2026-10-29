@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React, { useState } from 'react'
 import { api } from '../api.js'
 import { Modal, useToast, useConfirm, Empty } from './common.jsx'
@@ -8,6 +9,7 @@ import { friendlyDate, diffDays, todayStr } from '../util.js'
 
 /** 로드맵: 버전·마일스톤별 진행률과 업무 (Redmine 로드맵 / OpenProject 마일스톤) */
 export default function RoadmapView({ board, items, statusById, ops, users, setBoard, canManage, filtering }) {
+  const noun = itemNoun(board)
   const toast = useToast()
   const [confirm, confirmDialog] = useConfirm()
   const [editing, setEditing] = useState(null)
@@ -27,7 +29,7 @@ export default function RoadmapView({ board, items, statusById, ops, users, setB
   }
   const remove = async (v) => {
     const n = (byVersion[v.id] || []).length
-    if (!(await confirm(`'${v.name}' 버전을 삭제할까요?${n ? `\n업무 ${n}개의 버전이 비워집니다(업무는 남습니다).` : ''}`, { okText: '삭제' }))) return
+    if (!(await confirm(`'${v.name}' 버전을 삭제할까요?${n ? `\n${noun} ${n}개의 버전이 비워집니다(${noun}${josa(noun, '은/는')} 남습니다).` : ''}`, { okText: '삭제' }))) return
     try { await api.del(`/api/versions/${v.id}`); setVersions((vs) => vs.filter((x) => x.id !== v.id)); ops.reload() } catch (e) { toast(e.message, 'error') }
   }
   const toggleClose = async (v) => {
@@ -69,7 +71,7 @@ export default function RoadmapView({ board, items, statusById, ops, users, setB
         </div>
         {expanded && (
           <div className="rm-items">
-            {list.length === 0 && <div className="muted small" style={{ padding: '6px 2px' }}>이 버전에 배정된 업무가 없습니다. 업무 상세에서 버전을 지정하세요.</div>}
+            {list.length === 0 && <div className="muted small" style={{ padding: '6px 2px' }}>이 버전에 배정된 {noun}{josa(noun, '이/가')} 없습니다. {noun} 상세에서 버전을 지정하세요.</div>}
             {list.map((it) => (
               <div key={it.id} className={`rm-row ${statusById[it.statusId]?.done ? 'is-done' : ''}`}>
                 <StatusChip item={it} statusById={statusById} statuses={board.statuses} onChange={(p) => ops.updateItem(it.id, p).catch(() => {})} variant="icon" />
@@ -96,7 +98,7 @@ export default function RoadmapView({ board, items, statusById, ops, users, setB
       </div>
       {versions.map((v) => card(v, byVersion[v.id] || []))}
       {(byVersion.none || []).length > 0 && card(null, byVersion.none)}
-      {versions.length === 0 && !(byVersion.none || []).length && <Empty icon="map" title={filtering ? '조건에 맞는 업무가 없습니다' : '버전·마일스톤이 없습니다'}>{!filtering && '예: 2026.11 정기 패치, 1차 오픈. 버전을 만들고 업무에 배정하면 진행률이 보입니다.'}</Empty>}
+      {versions.length === 0 && !(byVersion.none || []).length && <Empty icon="map" title={filtering ? `조건에 맞는 ${noun}${josa(noun, '이/가')} 없습니다` : '버전·마일스톤이 없습니다'}>{!filtering && `예: 2026.11 정기 패치, 1차 오픈. 버전을 만들고 ${noun}에 배정하면 진행률이 보입니다.`}</Empty>}
       {editing && <VersionModal v={editing.id ? editing : null} onClose={() => setEditing(null)} onSave={save} />}
       {confirmDialog}
     </div>

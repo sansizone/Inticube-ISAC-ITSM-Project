@@ -47,7 +47,7 @@ public class MondayImportService {
      */
     public enum Field {
         NAME, ITEM_ID, STATUS, ASSIGNEE, START, DUE, TIMELINE, PRIORITY, CREATED, DESCRIPTION, IGNORE,
-        TEXT, LONG_TEXT, NUMBER, DATE, DATETIME, PEOPLE, DROPDOWN, LINK;
+        TEXT, LONG_TEXT, NUMBER, DATE, DATETIME, PEOPLE, DROPDOWN, LINK, PHONE;
         boolean custom() { return ordinal() >= TEXT.ordinal(); }
     }
 
@@ -77,6 +77,7 @@ public class MondayImportService {
     private final AppUserDao userDao;
     private final ColumnConvertService convertService;
     private final AccessGuard guard;
+    private final RelationService relations;
 
     // ───────────────────────── 결과/요청 타입 ─────────────────────────
 
@@ -89,9 +90,19 @@ public class MondayImportService {
                           List<StatusInfo> statuses, List<PersonInfo> people, int itemCount, int subitemCount,
                           int updateCount, int replyCount, int unmatchedUpdates, int updateFiles, List<String> warnings) {}
     /** people 값: 사용자 ID = 그 계정에 연결, 0 = 비활성 계정 새로 만들어 연결, null = 연결 안 함(이름만 보존) */
-    public record Options(String boardName, Map<String, Field> columns, Map<String, Field> subColumns, Map<String, Long> people, Boolean isPublic) {}
+    /**
+     * views: 만들 보기 탭 유형(list·kanban…). 비우면 기본 탭 전부, 표(table)는 항상 포함. showProgress: false 면 진행률(%) 숨김.
+     * targetBoardId: 있으면 새로 만들지 않고 그 워크스페이스를 엑셀 내용으로 갱신 (설정·보기·연결은 유지). deleteMissing: 갱신 때 엑셀에 없는 항목 삭제
+     * links: 업무 열 이름 → 연결할 워크스페이스 ID. 그 열은 이름으로 대상 업무를 찾아 고르는 연결 컬럼이 된다 (못 찾은 값은 따로 보관)
+     */
+    public record Options(String boardName, Map<String, Field> columns, Map<String, Field> subColumns, Map<String, Long> people, Boolean isPublic, List<String> views, Boolean showProgress,
+                          Long targetBoardId, Boolean deleteMissing, Map<String, Long> links,
+                          /** 업무 열 이름 → 사람 컬럼 후보 워크스페이스 ID (예: 서비스요청자 → 고객사직원정보). 이름은 그대로 보존 */
+                          Map<String, Long> peopleSources) {}
+    /** 갱신(targetBoardId)일 때 items·subitems 는 새로 만든 수, updatedItems 는 기존 항목을 고친 수, deletedItems 는 삭제한 수 */
     public record Result(Long boardId, String boardName, int groups, int items, int subitems, int updates, int columns,
-                         List<String> newStatuses, List<String> createdUsers, List<String> warnings) {}
+                         List<String> newStatuses, List<String> createdUsers, List<String> warnings,
+                         boolean replaced, int updatedItems, int deletedItems) {}
 
     // ───────────────────────── 파싱 결과 (내부) ─────────────────────────
 
@@ -188,6 +199,7 @@ public class MondayImportService {
     // ───────────────────────── 적용 ─────────────────────────
 
     public Result insertWorkspace(MultipartFile file, Options opt, UserPrincipal me) {
+        if (opt.targetBoardId() != null) return updateWorkspace(file, opt, me);
         Parsed p = parse(file);
         String boardName = Optional.ofNullable(opt.boardName()).map(String::trim).filter(s -> !s.isEmpty())
                 .orElse(Optional.ofNullable(p.title).orElse("엑셀 가져오기"));
@@ -200,24 +212,19 @@ public class MondayImportService {
         // 1) 사람: 기존 계정 연결 또는 비활성 계정 생성
         Map<String, AppUser> people = new HashMap<>();
         List<String> createdUsers = new ArrayList<>();
-        if (opt.people() != null) {
-            Map<Long, AppUser> byId = userDao.selectAllOrderByName().stream().collect(Collectors.toMap(AppUser::getId, u -> u));
-            for (var e : opt.people().entrySet()) {
-                Long id = e.getValue();
-                String name = e.getKey() == null ? "" : e.getKey().trim();
-                if (id == null || name.isEmpty()) continue;
-                if (id == 0L) {
-                    AppUser u = userService.insertInactiveUser(name);
-                    people.put(norm(name), u);
-                    createdUsers.add(u.getName() + " (" + u.getUsername() + ")");
-                } else if (byId.containsKey(id)) people.put(norm(name), byId.get(id));
-            }
-        }
+        resolvePeople(opt, people, createdUsers);
         AppUser importer = userDao.selectById(me.id());
 
         // 2) 보드 (기본 상태 4개 + 그룹 1개가 생기므로 그룹은 지우고 먼데이 그룹으로 대체)
         BoardSummary bs = boardService.insertBoard(new BoardRequest(boardName, null, opt.isPublic() == null ? Boolean.TRUE : opt.isPublic()), me);
         Board board = boardDao.selectById(bs.id());
+        // 선택한 보기 탭만 남김 (표는 필수)
+        if (opt.views() != null && !opt.views().isEmpty()) {
+            Set<String> keep = new HashSet<>(opt.views());
+            keep.add("table");
+            for (BoardView v : partsDao.selectViewsByBoard(board.getId()))
+                if (!keep.contains(v.getType())) partsDao.deleteView(v.getId());
+        }
         // 새로 만든 계정은 이 워크스페이스의 워크스페이스 멤버로 (나중에 활성화하면 바로 보이도록)
         for (AppUser u : people.values()) boardService.insertMemberIfAbsent(board.getId(), u.getId());
         partsDao.deleteGroupsByBoard(board.getId());
@@ -226,7 +233,8 @@ public class MondayImportService {
         Map<String, BoardColumn> itemCols = createColumns(board, p.headers, colMap, itemVals, "ITEM", 1);
         Map<String, BoardColumn> subCols = createColumns(board, p.subHeaders, subMap, subVals, "SUBITEM", itemCols.size() + 1);
         // 표·목록에는 엑셀에 있던 열만: 매핑되지 않은 기본 컬럼은 숨기고, 순서는 엑셀 열 순서대로
-        board.setColumnConfig(getImportColumnConfig(p.headers, colMap, itemCols, p.nameHeader));
+        board.setColumnConfig(getImportColumnConfig(p.headers, colMap, itemCols, p.nameHeader, !Boolean.FALSE.equals(opt.showProgress())));
+        List<String> peopleNotes = applyPeopleSources(board, itemCols, opt.peopleSources());
         boardDao.update(board);
 
         List<BoardStatus> boardStatuses = new ArrayList<>(partsDao.selectStatusesByBoard(board.getId()));
@@ -268,14 +276,293 @@ public class MondayImportService {
         }
         insertValues(valueRows);
         boardService.batchAssignKeys(board);
-        // 다른 워크스페이스 이름과 같은 열(예: '솔루션' ↔ '솔루션관리')은 그 워크스페이스에서 고르는 연결 컬럼으로
+        // 매핑에서 고른 워크스페이스 연결 먼저, 그다음 이름이 같은 워크스페이스 자동 연결(예: '솔루션' ↔ '솔루션관리')
+        warnings.addAll(peopleNotes);
+        warnings.addAll(linkChosen(board, itemCols, opt.links(), me));
         warnings.addAll(batchLinkColumns(board, itemCols, me));
 
         if (badDates[0] > 0) warnings.add("날짜로 읽지 못한 값 " + badDates[0] + "건이 있습니다 (기본 필드는 비워 두었습니다).");
         int files = (int) p.updates.stream().filter(PUpdate::hasFiles).count();
         if (files > 0) warnings.add("첨부파일이 있던 업데이트 " + files + "건: 엑셀에는 파일이 들어 있지 않아 파일은 옮겨지지 않았습니다(본문은 이관됨).");
         return new Result(board.getId(), board.getName(), Math.max(1, gs.size()), itemCount, subCount, updCount,
-                itemCols.size() + subCols.size(), newStatuses, createdUsers, warnings);
+                itemCols.size() + subCols.size(), newStatuses, createdUsers, warnings, false, 0, 0);
+    }
+
+    private void resolvePeople(Options opt, Map<String, AppUser> people, List<String> createdUsers) {
+        if (opt.people() == null) return;
+        Map<Long, AppUser> byId = userDao.selectAllOrderByName().stream().collect(Collectors.toMap(AppUser::getId, u -> u));
+        for (var e : opt.people().entrySet()) {
+            Long id = e.getValue();
+            String name = e.getKey() == null ? "" : e.getKey().trim();
+            if (id == null || name.isEmpty()) continue;
+            if (id == 0L) {
+                AppUser u = userService.insertInactiveUser(name);
+                people.put(norm(name), u);
+                createdUsers.add(u.getName() + " (" + u.getUsername() + ")");
+            } else if (byId.containsKey(id)) people.put(norm(name), byId.get(id));
+        }
+    }
+
+    /**
+     * 기존 워크스페이스를 엑셀 내용으로 갱신 (다시 이관).
+     * 워크스페이스 이름·설정·보기 탭·컬럼 설정·연결 컬럼·멤버는 그대로 두고 업무만 맞춘다.
+     * - 같은 업무 찾기: 먼데이 항목 ID(엑셀 'Item ID' 열) → 없으면 같은 이름(그룹 무관, 위에서부터 하나씩)
+     * - 찾은 업무: 엑셀에 있는 열의 값으로 덮어씀(빈 칸이면 비움). 엑셀에 없는 컬럼 값·댓글·첨부·연결은 유지
+     * - 못 찾은 업무: 새로 만들고 업데이트(댓글)도 옮김. 기존 업무의 업데이트는 중복을 막으려고 다시 옮기지 않음
+     * - 같은 이름의 컬럼은 그대로 쓰고(연결 컬럼이면 이름으로 대상 업무를 찾아 연결), 없는 열만 새 컬럼으로
+     * - deleteMissing 이면 엑셀에 없는 업무는 삭제
+     * 업무 ID 가 바뀌지 않으므로 다른 워크스페이스에서 이 업무를 가리키던 연결이 끊어지지 않는다.
+     */
+    private Result updateWorkspace(MultipartFile file, Options opt, UserPrincipal me) {
+        Board board = guard.getBoardChecked(opt.targetBoardId());
+        guard.setManageChecked(board);
+        Parsed p = parse(file);
+        Map<String, List<String>> itemVals = valuesOf(p, false), subVals = valuesOf(p, true);
+        Map<String, Field> colMap = merge(guessAll(p.headers, itemVals), opt.columns());
+        Map<String, Field> subMap = merge(guessAll(p.subHeaders, subVals), opt.subColumns());
+
+        Map<String, AppUser> people = new HashMap<>();
+        List<String> createdUsers = new ArrayList<>();
+        resolvePeople(opt, people, createdUsers);
+        AppUser importer = userDao.selectById(me.id());
+        for (AppUser u : people.values()) boardService.insertMemberIfAbsent(board.getId(), u.getId());
+
+        // 컬럼: 같은 이름·범위의 기존 컬럼을 쓰고, 없는 열만 새로 만든다
+        List<BoardColumn> existingCols = partsDao.selectColumnsByBoard(board.getId());
+        int nextOrder = existingCols.stream().mapToInt(BoardColumn::getSortOrder).max().orElse(0) + 1;
+        Map<String, BoardColumn> itemCols = reuseColumns(board, p.headers, colMap, itemVals, "ITEM", existingCols, nextOrder);
+        nextOrder += itemCols.size();
+        // 사람(후보 워크스페이스)으로 고른 열: 기존 컬럼이 연결·텍스트여도 사람 컬럼으로 바꾼 뒤 값을 넣음 (값을 쓰기 전에 해야 이름이 지워지지 않음)
+        List<String> peopleNotes = applyPeopleSources(board, itemCols, opt.peopleSources());
+        if (!peopleNotes.isEmpty()) boardDao.update(board);
+        Map<String, BoardColumn> subCols = reuseColumns(board, p.subHeaders, subMap, subVals, "SUBITEM", existingCols, nextOrder);
+        int newCols = (int) (itemCols.values().stream().filter(c -> existingCols.stream().noneMatch(x -> x.getId().equals(c.getId()))).count()
+                + subCols.values().stream().filter(c -> existingCols.stream().noneMatch(x -> x.getId().equals(c.getId()))).count());
+
+        List<BoardStatus> boardStatuses = new ArrayList<>(partsDao.selectStatusesByBoard(board.getId()));
+        Map<String, BoardStatus> statusByLabel = new HashMap<>();
+        for (BoardStatus s : boardStatuses) statusByLabel.putIfAbsent(norm(s.getLabel()), s);
+        List<String> newStatuses = new ArrayList<>();
+        List<String> warnings = new ArrayList<>(p.warnings);
+        int[] badDates = {0};
+        RelResolver rel = new RelResolver();
+        Ctx ctx = new Ctx(board, statusByLabel, boardStatuses, newStatuses, people, importer, badDates, rel);
+
+        // 그룹: 이름이 같으면 그대로, 없으면 뒤에 추가
+        List<BoardGroup> groups = new ArrayList<>(partsDao.selectGroupsByBoard(board.getId()));
+        Map<String, BoardGroup> groupByName = new HashMap<>();
+        for (BoardGroup g : groups) groupByName.putIfAbsent(norm(g.getName()), g);
+        int groupOrder = groups.stream().mapToInt(BoardGroup::getSortOrder).max().orElse(0);
+
+        // 기존 업무 찾기용 색인
+        List<Item> existing = itemDao.selectByBoard(board.getId());
+        Map<String, Item> byExt = new HashMap<>();
+        Map<String, Deque<Item>> topByName = new HashMap<>();
+        Map<Long, Map<String, Deque<Item>>> subByName = new HashMap<>();
+        for (Item i : existing) {
+            if (i.getExternalId() != null && !i.getExternalId().isBlank()) byExt.putIfAbsent(i.getExternalId(), i);
+            if (i.getParent() == null) topByName.computeIfAbsent(norm(i.getName()), k -> new ArrayDeque<>()).add(i);
+            else subByName.computeIfAbsent(i.getParent().getId(), k -> new HashMap<>()).computeIfAbsent(norm(i.getName()), k -> new ArrayDeque<>()).add(i);
+        }
+        Set<Long> matched = new HashSet<>();
+        Set<Field> itemFields = coveredFields(p.headers, colMap), subFields = coveredFields(p.subHeaders, subMap);
+
+        int created = 0, createdSubs = 0, updated = 0, updCount = 0;
+        List<Object[]> valueRows = new ArrayList<>();
+        for (PGroup pg : p.groups) {
+            BoardGroup g = groupByName.get(norm(pg.name));
+            if (g == null) {
+                g = new BoardGroup();
+                g.setBoard(board); g.setName(cut(pg.name, 100));
+                g.setColor(COLORS[groupOrder % COLORS.length]); g.setSortOrder(++groupOrder);
+                partsDao.insertGroup(g);
+                groupByName.put(norm(pg.name), g);
+            }
+            int order = 0;
+            for (PItem pi : pg.items) {
+                order++;
+                Item found = find(pi, byExt, topByName.get(norm(pi.name)), matched);
+                Item it;
+                if (found == null) {
+                    it = build(ctx, g, pi, colMap, itemCols, valueRows, order, null);
+                    created++;
+                    updCount += saveUpdates(it, pi.updates, people, importer);
+                } else {
+                    it = applyUpdate(ctx, found, g, pi, colMap, itemCols, itemFields, order, null);
+                    matched.add(it.getId());
+                    updated++;
+                }
+                Map<String, Deque<Item>> kids = subByName.getOrDefault(it.getId(), Map.of());
+                int subOrder = 0;
+                for (PItem si : pi.subitems) {
+                    subOrder++;
+                    Item sf = find(si, byExt, kids.get(norm(si.name)), matched);
+                    if (sf != null && sf.getParent() != null && sf.getParent().getId().equals(it.getId())) {
+                        applyUpdate(ctx, sf, g, si, subMap, subCols, subFields, subOrder, it);
+                        matched.add(sf.getId());
+                        updated++;
+                    } else {
+                        Item sub = build(ctx, g, si, subMap, subCols, valueRows, subOrder, it);
+                        createdSubs++;
+                        updCount += saveUpdates(sub, si.updates, people, importer);
+                    }
+                }
+            }
+        }
+        insertValues(valueRows);
+        boardService.batchAssignKeys(board);
+        warnings.addAll(peopleNotes);
+        warnings.addAll(linkChosen(board, itemCols, opt.links(), me));
+
+        int deleted = 0;
+        if (Boolean.TRUE.equals(opt.deleteMissing())) {
+            List<Item> gone = existing.stream().filter(i -> !matched.contains(i.getId())).toList();
+            Set<Long> goneIds = gone.stream().map(Item::getId).collect(Collectors.toSet());
+            // 상위가 지워지면 하위도 같이 지워지므로, 상위가 남는 하위만 따로 넘긴다
+            List<Item> roots = gone.stream().filter(i -> i.getParent() == null || !goneIds.contains(i.getParent().getId())).toList();
+            deleted = gone.size();
+            boardService.deleteItems(roots);
+        } else {
+            long missing = existing.stream().filter(i -> !matched.contains(i.getId())).count();
+            if (missing > 0) warnings.add("엑셀에 없는 기존 항목 " + missing + "건은 그대로 두었습니다.");
+        }
+        if (rel.missed > 0) warnings.add("연결 컬럼에서 대상 워크스페이스에 없는 이름 " + rel.missed + "건은 연결하지 못했습니다.");
+        if (badDates[0] > 0) warnings.add("날짜로 읽지 못한 값 " + badDates[0] + "건이 있습니다 (기본 필드는 비워 두었습니다).");
+        if (updated > 0 && !p.updates.isEmpty()) warnings.add("이미 있던 항목의 업데이트(댓글)는 중복을 막기 위해 다시 옮기지 않았습니다.");
+        return new Result(board.getId(), board.getName(), p.groups.size(), created, createdSubs, updCount, newCols,
+                newStatuses, createdUsers, warnings, true, updated, deleted);
+    }
+
+    /** 먼데이 항목 ID 로 먼저, 없으면 같은 이름의 아직 안 쓴 항목 */
+    private static Item find(PItem pi, Map<String, Item> byExt, Deque<Item> sameName, Set<Long> used) {
+        if (pi.mondayId != null && !pi.mondayId.isBlank()) {
+            Item i = byExt.get(cut(pi.mondayId, 50));
+            if (i != null && !used.contains(i.getId())) return i;
+        }
+        if (sameName != null) while (!sameName.isEmpty()) {
+            Item i = sameName.poll();
+            if (!used.contains(i.getId())) return i;
+        }
+        return null;
+    }
+
+    /** 엑셀에 열이 있는 기본 필드 */
+    private static Set<Field> coveredFields(List<String> headers, Map<String, Field> map) {
+        Set<Field> out = EnumSet.noneOf(Field.class);
+        for (String h : headers) { Field f = map.get(h); if (f != null) out.add(f); }
+        return out;
+    }
+
+    /** 기존 업무에 엑셀 값 반영: 엑셀에 열이 있는 필드만 덮어쓰고(빈 칸은 비움) 나머지는 유지 */
+    private Item applyUpdate(Ctx ctx, Item cur, BoardGroup g, PItem pi, Map<String, Field> map, Map<String, BoardColumn> cols,
+                             Set<Field> covered, int order, Item parent) {
+        Map<BoardColumn, String> custom = new LinkedHashMap<>();
+        Item n = parseItem(ctx, g, pi, map, cols, order, parent, custom);
+        cur.setName(n.getName());
+        if (parent == null) cur.setGroup(g);
+        cur.setSortOrder(order);
+        if (n.getExternalId() != null) cur.setExternalId(n.getExternalId());
+        if (covered.contains(Field.STATUS)) cur.setStatus(n.getStatus());
+        if (covered.contains(Field.ASSIGNEE)) cur.setAssignee(n.getAssignee());
+        if (covered.contains(Field.START) || covered.contains(Field.TIMELINE) || covered.contains(Field.CREATED)) cur.setStartDate(n.getStartDate());
+        if (covered.contains(Field.DUE) || covered.contains(Field.TIMELINE)) cur.setDueDate(n.getDueDate());
+        if (covered.contains(Field.PRIORITY)) cur.setPriority(n.getPriority());
+        if (covered.contains(Field.DESCRIPTION)) cur.setDescription(n.getDescription());
+        cur.setUpdatedAt(LocalDateTime.now());
+        itemDao.update(cur);
+        // 엑셀에 있는 컬럼만: 값이 있으면 넣고, 빈 칸이면 지움
+        Map<Long, ItemValue> have = new HashMap<>();
+        for (ItemValue v : itemDao.selectValuesByItem(cur.getId())) have.putIfAbsent(v.getColumnId(), v);
+        for (BoardColumn c : new LinkedHashSet<>(cols.values())) {
+            String v = custom.getOrDefault(c, "");
+            ItemValue old = have.get(c.getId());
+            if (v.isEmpty()) { if (old != null) itemDao.deleteValue(old.getId()); }
+            else if (old == null) { ItemValue nv = new ItemValue(); nv.setItemId(cur.getId()); nv.setColumnId(c.getId()); nv.setValue(v); itemDao.insertValue(nv); }
+            else if (!v.equals(old.getValue())) { old.setValue(v); itemDao.updateValue(old); }
+        }
+        return cur;
+    }
+
+    /** 같은 이름·범위의 기존 컬럼은 그대로 쓰고 없는 열만 새 컬럼으로 (새 컬럼은 맨 뒤) */
+    private Map<String, BoardColumn> reuseColumns(Board board, List<String> headers, Map<String, Field> map,
+                                                  Map<String, List<String>> vals, String scope, List<BoardColumn> existing, int startOrder) {
+        Map<String, BoardColumn> out = new LinkedHashMap<>();
+        List<String> missing = new ArrayList<>();
+        for (String h : headers) {
+            Field f = map.get(h);
+            if (!(f == Field.ASSIGNEE || (f != null && f.custom()))) continue;
+            BoardColumn c = existing.stream().filter(x -> x.getScope().equals(scope) && norm(x.getName()).equals(norm(cut(h, 100)))).findFirst().orElse(null);
+            if (c != null) out.put(h, c); else missing.add(h);
+        }
+        out.putAll(createColumns(board, missing, map, vals, scope, startOrder));
+        return out;
+    }
+
+    /**
+     * 매핑에서 '사람 (후보: 워크스페이스)'를 고른 열: 사람 컬럼으로 두고 후보 워크스페이스(column_config.peopleSources)를 지정.
+     * 갱신 때 기존 컬럼이 연결 컬럼이면 저장된 업무 ID 를 그 업무 이름으로 바꿔 사람 컬럼으로 전환한다 (값이 사라지지 않도록).
+     * board 의 columnConfig 만 고치고 저장은 호출하는 쪽에서.
+     */
+    private List<String> applyPeopleSources(Board board, Map<String, BoardColumn> itemCols, Map<String, Long> sources) {
+        List<String> notes = new ArrayList<>();
+        if (sources == null || sources.isEmpty()) return notes;
+        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+        com.fasterxml.jackson.databind.node.ObjectNode cfg;
+        try {
+            cfg = board.getColumnConfig() == null || board.getColumnConfig().isBlank() ? om.createObjectNode()
+                    : (com.fasterxml.jackson.databind.node.ObjectNode) om.readTree(board.getColumnConfig());
+        } catch (Exception e) { cfg = om.createObjectNode(); }
+        com.fasterxml.jackson.databind.node.ObjectNode ps = cfg.has("peopleSources") && cfg.get("peopleSources").isObject()
+                ? (com.fasterxml.jackson.databind.node.ObjectNode) cfg.get("peopleSources") : cfg.putObject("peopleSources");
+        for (var e : sources.entrySet()) {
+            BoardColumn c = itemCols.get(e.getKey());
+            Board src = e.getValue() == null ? null : boardDao.selectById(e.getValue());
+            if (c == null || src == null || src.getId().equals(board.getId())) continue;
+            if (!"PEOPLE".equals(c.getType())) {
+                if (RelationService.TYPE.equals(c.getType())) {
+                    // 연결 값(업무 ID 목록) → 이름 목록
+                    List<ItemValue> vals = itemDao.selectValuesByColumns(List.of(c.getId()));
+                    Set<Long> ids = new HashSet<>();
+                    for (ItemValue v : vals) ids.addAll(RelationService.getIds(v.getValue()));
+                    Map<Long, String> names = new HashMap<>();
+                    if (!ids.isEmpty()) for (Item t : itemDao.selectByIds(new ArrayList<>(ids))) names.put(t.getId(), t.getName());
+                    for (ItemValue v : vals) {
+                        String joined = String.join(", ", RelationService.getIds(v.getValue()).stream().map(names::get).filter(Objects::nonNull).toList());
+                        if (joined.isEmpty()) itemDao.deleteValue(v.getId()); else { v.setValue(joined); itemDao.updateValue(v); }
+                    }
+                    c.setRefBoardId(null); c.setRefColumnId(null);
+                }
+                c.setType("PEOPLE");
+                partsDao.updateColumn(c);
+            }
+            ps.put(String.valueOf(c.getId()), src.getId());
+            notes.add("'" + e.getKey() + "' 열은 사람 컬럼으로 두고, 후보를 '" + src.getName() + "' 워크스페이스에서 고르도록 했습니다 (이름은 그대로 보존).");
+        }
+        try { board.setColumnConfig(om.writeValueAsString(cfg)); } catch (Exception ignore) { /* 그대로 */ }
+        return notes;
+    }
+
+    /** 매핑에서 '연결 → 워크스페이스'를 고른 열: 텍스트로 넣은 값을 이름으로 대상 업무와 맞춰 연결 컬럼으로 바꾼다 */
+    private List<String> linkChosen(Board board, Map<String, BoardColumn> itemCols, Map<String, Long> links, UserPrincipal me) {
+        List<String> notes = new ArrayList<>();
+        if (links == null || links.isEmpty()) return notes;
+        for (var e : links.entrySet()) {
+            BoardColumn c = itemCols.get(e.getKey());
+            Long target = e.getValue();
+            if (c == null || target == null || target.equals(board.getId())) continue;
+            if (RelationService.TYPE.equals(c.getType())) continue; // 이미 연결 컬럼(갱신 때)은 위에서 이름으로 연결됨
+            Board tb = boardDao.selectById(target);
+            if (tb == null) continue;
+            try {
+                var r = convertService.updateConvert(c.getId(), target, null, false, me);
+                c.setType(RelationService.TYPE); c.setRefBoardId(target); // 메모리 객체도 맞춰 둬야 아래 자동 연결이 다시 건드리지 않음
+                notes.add("'" + e.getKey() + "' 열을 '" + tb.getName() + "' 연결 컬럼으로 만들었습니다 (" + r.linkedRows() + "건 연결"
+                        + (r.keptColumnName() != null ? ", 못 찾은 값은 '" + r.keptColumnName() + "' 컬럼에 보관" : "") + ").");
+            } catch (ApiException ex) {
+                notes.add("'" + e.getKey() + "' 열을 '" + tb.getName() + "'에 연결하지 못했습니다: " + ex.getMessage());
+            }
+        }
+        return notes;
     }
 
     /** 워크스페이스 이름 끝의 흔한 접미어 / 열 이름 끝의 흔한 접미어 (비교용 줄기만 남김) */
@@ -342,7 +629,7 @@ public class MondayImportService {
      * 가져온 워크스페이스의 컬럼 설정(JSON): 엑셀에 있던 기본 필드·사용자 정의 컬럼만 보이고 엑셀 열 순서를 따른다.
      * { "hidden": [엑셀에 없던 기본 컬럼], "order": [엑셀 열 순서의 키], "known": [모든 기본 컬럼] }
      */
-    private static String getImportColumnConfig(List<String> headers, Map<String, Field> colMap, Map<String, BoardColumn> itemCols, String nameHeader) {
+    private static String getImportColumnConfig(List<String> headers, Map<String, Field> colMap, Map<String, BoardColumn> itemCols, String nameHeader, boolean showProgress) {
         LinkedHashSet<String> order = new LinkedHashSet<>();
         for (String h : headers) {
             Field f = colMap.get(h);
@@ -355,6 +642,7 @@ public class MondayImportService {
         cfg.put("hidden", hidden);
         cfg.put("order", new ArrayList<>(order));
         cfg.put("known", BUILTIN_KEYS);
+        cfg.put("showProgress", showProgress);
         // 업무명 열 제목이 '이름·Name·업무명' 같은 일반 이름이 아니면 그대로 업무명 컬럼 이름으로 (예: 솔루션명)
         if (nameHeader != null && !nameHeader.isBlank() && !NAME_KEYS.contains(norm(nameHeader)))
             cfg.put("labels", Map.of("name", nameHeader.trim().length() > 30 ? nameHeader.trim().substring(0, 30) : nameHeader.trim()));
@@ -366,7 +654,39 @@ public class MondayImportService {
     }
 
     private record Ctx(Board board, Map<String, BoardStatus> statusByLabel, List<BoardStatus> boardStatuses, List<String> newStatuses,
-                       Map<String, AppUser> people, AppUser importer, int[] badDates) {}
+                       Map<String, AppUser> people, AppUser importer, int[] badDates, RelResolver rel) {
+        Ctx(Board board, Map<String, BoardStatus> statusByLabel, List<BoardStatus> boardStatuses, List<String> newStatuses,
+            Map<String, AppUser> people, AppUser importer, int[] badDates) {
+            this(board, statusByLabel, boardStatuses, newStatuses, people, importer, badDates, null);
+        }
+        /** 연결 컬럼에 들어갈 엑셀 글자(이름, 쉼표 구분) → 대상 워크스페이스 업무 ID. 못 찾은 이름은 빼고 개수만 센다 */
+        String relValue(BoardColumn c, String v) { return rel == null ? "" : rel.resolve(c, v); }
+    }
+
+    /** 갱신 가져오기용: 연결 컬럼 값(이름) → 대상 업무 ID. 컬럼별 후보는 한 번만 읽는다 */
+    private final class RelResolver {
+        final Map<Long, Map<String, Long>> byCol = new HashMap<>();
+        int missed = 0;
+        String resolve(BoardColumn c, String v) {
+            Map<String, Long> m = byCol.computeIfAbsent(c.getId(), k -> {
+                Map<String, Long> out = new HashMap<>();
+                for (var o : relations.getOptions(c.getId(), "", 100_000)) {
+                    out.putIfAbsent(norm(o.label()), o.id());
+                    String sub = o.sub() == null ? "" : o.sub();
+                    int dot = sub.lastIndexOf(" · ");
+                    if (dot > 0) out.putIfAbsent(norm(sub.substring(0, dot)), o.id()); // 표시 컬럼이 따로 있으면 업무명도
+                }
+                return out;
+            });
+            List<String> ids = new ArrayList<>();
+            for (String n : splitPeople(v)) {
+                if (n.matches("\\d+") && m.containsValue(Long.parseLong(n))) { ids.add(n); continue; }
+                Long id = m.get(norm(n));
+                if (id == null) missed++; else if (!ids.contains(String.valueOf(id))) ids.add(String.valueOf(id));
+            }
+            return String.join(",", ids);
+        }
+    }
 
     private static Map<String, Field> merge(Map<String, Field> guessed, Map<String, Field> chosen) {
         if (chosen != null) chosen.forEach((h, f) -> { if (f != null && guessed.containsKey(h)) guessed.put(h, f); });
@@ -407,6 +727,16 @@ public class MondayImportService {
 
     private Item build(Ctx ctx, BoardGroup g, PItem pi, Map<String, Field> map, Map<String, BoardColumn> cols,
                        List<Object[]> valueRows, int order, Item parent) {
+        Map<BoardColumn, String> custom = new LinkedHashMap<>();
+        Item it = parseItem(ctx, g, pi, map, cols, order, parent, custom);
+        itemDao.insert(it);
+        for (var e : custom.entrySet()) if (!e.getValue().isEmpty()) valueRows.add(new Object[]{it.getId(), e.getKey().getId(), e.getValue()});
+        return it;
+    }
+
+    /** 엑셀 한 행 → 저장 전 업무 객체. custom 에 사용자 정의 컬럼 값(정리된 값)을 채운다 */
+    private Item parseItem(Ctx ctx, BoardGroup g, PItem pi, Map<String, Field> map, Map<String, BoardColumn> cols,
+                           int order, Item parent, Map<BoardColumn, String> custom) {
         Item it = new Item();
         it.setBoard(ctx.board());
         it.setGroup(g);
@@ -417,7 +747,6 @@ public class MondayImportService {
         it.setCreatedBy(ctx.importer());
         String desc = null;
         LocalDateTime created = null;
-        Map<BoardColumn, String> custom = new LinkedHashMap<>();
         for (var e : pi.values.entrySet()) {
             String h = e.getKey(), raw = e.getValue() == null ? "" : e.getValue();
             String v = raw.trim();
@@ -445,7 +774,7 @@ public class MondayImportService {
                 default -> { }
             }
             BoardColumn col = cols.get(h);
-            if (col != null) custom.put(col, customValue(col, raw));
+            if (col != null) custom.put(col, RelationService.TYPE.equals(col.getType()) ? ctx.relValue(col, v) : customValue(col, raw));
         }
         if (it.getStartDate() != null && it.getDueDate() != null && it.getStartDate().isAfter(it.getDueDate())) it.setStartDate(null);
         if (created != null) {
@@ -460,8 +789,6 @@ public class MondayImportService {
         for (PUpdate u : pi.updates) if (u.createdAt() != null && u.createdAt().isAfter(touched)) touched = u.createdAt();
         it.setUpdatedAt(touched);
         it.setDescription(desc == null ? "" : cut(desc, 100_000));
-        itemDao.insert(it);
-        for (var e : custom.entrySet()) if (!e.getValue().isEmpty()) valueRows.add(new Object[]{it.getId(), e.getKey().getId(), e.getValue()});
         return it;
     }
 
@@ -470,6 +797,7 @@ public class MondayImportService {
         String v = "LONG_TEXT".equals(c.getType()) ? raw.strip() : raw.trim();
         if ("DATE".equals(c.getType()) && ISO_DATETIME_FULL.matcher(v).matches() && v.substring(11).matches("00:00(:00)?")) return v.substring(0, 10);
         if ("NUMBER".equals(c.getType())) return v.replace(",", "");
+        if ("PHONE".equals(c.getType())) return PhoneFormat.format(v);
         return v;
     }
 
@@ -844,6 +1172,10 @@ public class MondayImportService {
         String h = norm(header);
         List<String> filled = vals.stream().map(String::trim).filter(v -> !v.isEmpty()).toList();
         boolean linkName = h.matches(".*(link|url|링크).*");
+        // 전화번호: 엑셀이 숫자로 바꿔 앞자리 0 이 빠지는 일이 많아 이름으로 먼저 판단
+        // 번호가 아닌 값(내선 123 등)은 PHONE 이어도 원래 글자 그대로 저장되므로 번호가 하나라도 있으면 PHONE
+        if (h.matches(PhoneFormat.HEADER_PATTERN) && filled.stream().noneMatch(v -> v.length() > 60)
+                && (filled.isEmpty() || filled.stream().anyMatch(v -> v.replaceAll("\\D", "").length() >= 7))) return Field.PHONE;
         if (filled.isEmpty()) return linkName ? Field.LINK : h.matches(".*(날짜|일자|date|일)$") ? Field.DATE : Field.TEXT;
         if (filled.stream().anyMatch(v -> v.contains("\n") || v.length() > 120)) return Field.LONG_TEXT;
         if (filled.stream().allMatch(v -> ISO_DATE_FULL.matcher(v).matches() || ISO_DATETIME_FULL.matcher(v).matches())) {

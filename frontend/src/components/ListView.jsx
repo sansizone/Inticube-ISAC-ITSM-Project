@@ -1,16 +1,18 @@
+import { SelectBox } from './BulkActions.jsx'
 import React, { useState } from 'react'
 import { StatusChip, AssigneeChip, PriorityChip, DateChip, InlineText, StatusBattery, DutyChip, TypeChip, SlaBadge } from './cells.jsx'
 import { itemKey, blockedBy } from '../sla.js'
 import { Popover, usePopover, Empty } from './common.jsx'
 import { Icon } from './icons.jsx'
 import { PALETTE, isOverdue } from '../util.js'
-import { viewColumns } from './Fields.jsx'
+import { viewColumns, addPlaceholder, itemNoun, josa } from './Fields.jsx'
 import { RowMenu } from './TableView.jsx'
 
 const LIST_KEYS = ['sla', 'duty', 'status', 'start', 'due', 'assignee']
 
 /** 목록 뷰: 그룹별 섹션, 행 오른쪽에 속성 칩 (Linear 스타일) */
-export default function ListView({ board, items, statusById, ops, users, filtering, dutyIndex, onClearFilter, sorted, subsByParent = {}, hidden = [] }) {
+export default function ListView({ board, items, statusById, ops, users, filtering, dutyIndex, onClearFilter, sorted, subsByParent = {}, hidden = [], selection }) {
+  const noun = itemNoun(board)
   // 워크스페이스 컬럼 설정 순서·이름·숨김 + 보기별 숨김 (목록에는 기본 컬럼만 칩으로 표시)
   const vcols = viewColumns(board, hidden)
   const metaCols = vcols.filter((c) => LIST_KEYS.includes(c.key))
@@ -46,9 +48,11 @@ export default function ListView({ board, items, statusById, ops, users, filteri
     setDrag(null); setOver(null)
   }
   const update = (id) => (p) => ops.updateItem(id, p).catch(() => {})
+  const sel = selection
+  const anySel = sel && items.some((i) => sel.has(i.id))
 
   return (
-    <div className="list-view">
+    <div className={`list-view ${anySel ? 'has-sel' : ''}`}>
       {board.groups.map((g, gi) => {
         const groupItems = items.filter((i) => i.groupId === g.id)
         if (filtering && groupItems.length === 0) return null
@@ -63,12 +67,14 @@ export default function ListView({ board, items, statusById, ops, users, filteri
               </button>
               <span className="group-dot" style={{ background: g.color }} />
               <InlineText value={g.name} className="lgroup-name" maxLength={100} onSave={(name) => ops.updateGroup(g.id, { name })} />
+              {sel && groupItems.length > 0 && (() => { const ids = groupItems.map((i) => i.id); const on = ids.every((id) => sel.has(id))
+                return <SelectBox checked={on} partial={ids.some((id) => sel.has(id))} label={`${g.name} 그룹 모두 선택`} onChange={(v) => sel.set(ids, v)} /> })()}
               <span className="lgroup-count">{groupItems.length}</span>
               <div className="lgroup-battery"><StatusBattery items={groupItems} statuses={board.statuses} height={4} /></div>
               <span className="grow" />
               <GroupMenu group={g} ops={ops} first={gi === 0} last={gi === board.groups.length - 1} />
-              <button className="icon-btn icon-btn-sm" title="이 그룹에 업무 추가" aria-label="업무 추가"
-                onClick={async () => { const it = await ops.addItem(g.id, '새 업무'); if (it) ops.openItem(it.id) }}><Icon name="plus" size={14} /></button>
+              <button className="icon-btn icon-btn-sm" title={`이 그룹에 ${noun} 추가`} aria-label={`${noun} 추가`}
+                onClick={async () => { const it = await ops.addItem(g.id, `새 ${noun}`); if (it) ops.openItem(it.id) }}><Icon name="plus" size={14} /></button>
             </div>
             {!isCollapsed && (
               <div className="lrows">
@@ -78,9 +84,10 @@ export default function ListView({ board, items, statusById, ops, users, filteri
                   return (
                     <React.Fragment key={it.id}>
                     <div
-                      className={`lrow ${drag?.id === it.id ? 'dragging' : ''} ${over?.beforeId === it.id ? 'drop-before' : ''} ${st?.done ? 'is-done' : ''}`}
+                      className={`lrow ${sel?.has(it.id) ? 'is-selected' : ''} ${drag?.id === it.id ? 'dragging' : ''} ${over?.beforeId === it.id ? 'drop-before' : ''} ${st?.done ? 'is-done' : ''}`}
                       onDragOver={(e) => { if (drag) { e.preventDefault(); e.stopPropagation(); setOver({ groupId: g.id, beforeId: it.id }) } }}
                       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); drop(g.id, it.id) }}>
+                      {sel && <SelectBox checked={sel.has(it.id)} label={`${it.name} 선택`} onChange={(on) => sel.set([it.id], on)} />}
                       <span className={`grip ${sorted ? 'disabled' : ''}`} draggable={!sorted}
                         onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(it.id)); setDrag({ id: it.id }) }}
                         onDragEnd={() => { setDrag(null); setOver(null) }} title={sorted ? '정렬 중에는 끌어서 이동할 수 없습니다' : '끌어서 이동'} aria-label="끌어서 이동"><Icon name="grip" size={14} /></span>
@@ -88,12 +95,12 @@ export default function ListView({ board, items, statusById, ops, users, filteri
                       <span className="lrow-id" title={`#${it.id}`}>{itemKey(board, it)}</span>
                       {showType && <TypeChip item={it} types={board.types} onChange={update(it.id)} variant="icon" />}
                       {subs.length > 0
-                        ? <button className={`sub-toggle ${open[it.id] ? 'on' : ''}`} onClick={() => setOpen({ ...open, [it.id]: !open[it.id] })} title={`하위 업무 ${subs.length}개`} aria-label="하위 업무 펼치기">
+                        ? <button className={`sub-toggle ${open[it.id] ? 'on' : ''}`} onClick={() => setOpen({ ...open, [it.id]: !open[it.id] })} title={`하위 ${noun} ${subs.length}개`} aria-label={`하위 ${noun} 펼치기`}>
                             <Icon name={open[it.id] ? 'chevronDown' : 'chevronRight'} size={12} />{subs.length}
                           </button>
                         : <span className="sub-toggle-space" />}
                       <StatusChip item={it} statusById={statusById} statuses={board.statuses} onChange={update(it.id)} variant="icon" />
-                      {blockedBy(it, board, statusById).length > 0 && <span className="blocked-mark" title="미완료 업무에 막혀 있음"><Icon name="alert" size={12} /></span>}
+                      {blockedBy(it, board, statusById).length > 0 && <span className="blocked-mark" title={`미완료 ${noun}에 막혀 있음`}><Icon name="alert" size={12} /></span>}
                       <button className="lrow-name" onClick={() => ops.openItem(it.id)}>{it.name}</button>
                       <span className="lrow-meta">
                         {(it.commentCount > 0 || it.fileCount > 0) && (
@@ -103,25 +110,26 @@ export default function ListView({ board, items, statusById, ops, users, filteri
                           </span>
                         )}
                         {metaCols.map((c) => chip(c, it, st, false))}
-                        <RowMenu onDelete={() => ops.deleteItem(it.id)} onOpen={() => ops.openItem(it.id)} onMove={() => ops.moveItem(it.id)} />
+                        <RowMenu onDelete={ops.canDelete(it.id) ? () => ops.deleteItem(it.id) : null} onOpen={() => ops.openItem(it.id)} onMove={() => ops.moveItem(it.id)} />
                       </span>
                     </div>
                     {open[it.id] && subs.map((sb) => {
                       const sst = statusById[sb.statusId]
                       return (
-                        <div key={sb.id} className={`lrow lrow-sub ${sst?.done ? 'is-done' : ''}`}>
+                        <div key={sb.id} className={`lrow lrow-sub ${sst?.done ? 'is-done' : ''} ${sel?.has(sb.id) ? 'is-selected' : ''}`}>
+                          {sel && <SelectBox checked={sel.has(sb.id)} label={`${sb.name} 선택`} onChange={(on) => sel.set([sb.id], on)} />}
                           <span className="sub-indent" />
                           <StatusChip item={sb} statusById={statusById} statuses={board.statuses} onChange={update(sb.id)} variant="icon" />
                           <button className="lrow-name" onClick={() => ops.openItem(sb.id)}>{sb.name}</button>
                           <span className="lrow-meta">
                             {sb.commentCount > 0 && <span className="meta-counts"><span><Icon name="chat" size={12} />{sb.commentCount}</span></span>}
                             {metaCols.map((c) => chip(c, sb, sst, true))}
-                            <RowMenu sub onDelete={() => ops.deleteItem(sb.id)} onOpen={() => ops.openItem(sb.id)} />
+                            <RowMenu sub onDelete={ops.canDelete(sb.id) ? () => ops.deleteItem(sb.id) : null} onOpen={() => ops.openItem(sb.id)} />
                           </span>
                         </div>
                       )
                     })}
-                    {open[it.id] && <AddSubRow onAdd={(name) => ops.addItem(g.id, name, undefined, it.id)} />}
+                    {open[it.id] && <AddSubRow noun={noun} onAdd={(name) => ops.addItem(g.id, name, undefined, it.id)} />}
                     </React.Fragment>
                   )
                 })}
@@ -131,16 +139,16 @@ export default function ListView({ board, items, statusById, ops, users, filteri
                   </button>
                 )}
                 {drag && over?.groupId === g.id && over.beforeId == null && <div className="drop-end" />}
-                {!filtering && <AddItemRow onAdd={(name) => ops.addItem(g.id, name)} />}
+                {!filtering && <AddItemRow placeholder={addPlaceholder(board)} onAdd={(name) => ops.addItem(g.id, name)} />}
               </div>
             )}
           </section>
         )
       })}
-      {filtering && items.length === 0 && <Empty icon="filter" title="조건에 맞는 업무가 없습니다" />}
+      {filtering && items.length === 0 && <Empty icon="filter" title={`조건에 맞는 ${noun}${josa(noun, '이/가')} 없습니다`} />}
       {filtering && (
         <div className="filter-note">
-          <Icon name="filter" size={14} /> 필터 적용 중에는 업무·그룹 추가가 숨겨집니다.
+          <Icon name="filter" size={14} /> 필터 적용 중에는 {noun}·그룹 추가가 숨겨집니다.
           {onClearFilter && <button className="link" onClick={onClearFilter}>필터 해제</button>}
         </div>
       )}
@@ -162,24 +170,24 @@ export default function ListView({ board, items, statusById, ops, users, filteri
 
 const PAGE = 100
 
-function AddSubRow({ onAdd }) {
+function AddSubRow({ onAdd, noun }) {
   const [v, setV] = useState('')
   return (
     <div className="lrow lrow-add lrow-sub">
       <span className="sub-indent" />
       <Icon name="plus" size={13} className="muted" />
-      <input placeholder="하위 업무 추가 후 Enter" value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label="하위 업무 추가"
+      <input placeholder={`하위 ${noun} 추가 후 Enter`} value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label={`하위 ${noun} 추가`}
         onKeyDown={async (e) => { if (e.key === 'Enter' && v.trim()) { const name = v.trim(); setV(''); await onAdd(name) } if (e.key === 'Escape') setV('') }} />
     </div>
   )
 }
 
-function AddItemRow({ onAdd }) {
+function AddItemRow({ onAdd, placeholder }) {
   const [v, setV] = useState('')
   return (
     <div className="lrow lrow-add">
       <Icon name="plus" size={14} className="muted" />
-      <input placeholder="업무 추가 후 Enter" value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label="업무 추가"
+      <input placeholder={placeholder} value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label={placeholder}
         onKeyDown={async (e) => { if (e.key === 'Enter' && v.trim()) { const name = v.trim(); setV(''); await onAdd(name) } if (e.key === 'Escape') setV('') }} />
     </div>
   )

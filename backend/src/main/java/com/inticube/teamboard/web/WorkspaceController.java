@@ -75,12 +75,34 @@ public class WorkspaceController {
         boardService.setColumnConfig(id, req.config(), me);
     }
 
+    // ---------- 자동화 규칙 ----------
+    @PutMapping("/boards/{id}/automations")
+    public void automations(@PathVariable Long id, @RequestBody AutomationRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        guard.getBoardChecked(id);
+        boardService.setAutomations(id, req.rules(), me);
+    }
+
     // ---------- 연결 컬럼 ----------
     @GetMapping("/columns/{id}/options")
     public List<PickOption> options(@PathVariable Long id, @RequestParam(required = false) String q,
                                     @RequestParam(defaultValue = "30") int limit) {
         guard.getColumnChecked(id);
         return relations.getOptions(id, q, Math.max(1, Math.min(limit, 200)));
+    }
+
+    /** 사람 컬럼 후보: 컬럼 설정의 후보 워크스페이스 항목 (예: 고객사직원정보의 직원 이름) */
+    @GetMapping("/columns/{id}/people-options")
+    public List<PickOption> peopleOptions(@PathVariable Long id, @RequestParam(required = false) String q,
+                                          @RequestParam(defaultValue = "50") int limit) {
+        guard.getColumnChecked(id);
+        return relations.getPeopleOptions(id, q, Math.max(1, Math.min(limit, 500)));
+    }
+
+    /** 고르기 창에서 찾는 이름이 없을 때 대상 워크스페이스에 새 항목으로 추가 (예: 고객사직원정보에 새 직원) */
+    @PostMapping("/columns/{id}/options")
+    public PickOption addOption(@PathVariable Long id, @RequestBody Map<String, String> body, @AuthenticationPrincipal UserPrincipal me) {
+        guard.getColumnChecked(id);
+        return itemService.insertRelationTarget(id, body.get("name"), me);
     }
 
     /** 텍스트·드롭다운 컬럼 → 연결 컬럼 변환 미리보기 / 실행 */

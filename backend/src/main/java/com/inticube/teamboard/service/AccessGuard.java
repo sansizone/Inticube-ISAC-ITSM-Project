@@ -60,6 +60,15 @@ public class AccessGuard {
         return m != null && "OWNER".equals(m.getRole());
     }
 
+    /** 업무 삭제: 시스템 관리자, 워크스페이스 관리자, 그 업무를 등록한 사람만 */
+    public void setDeleteItemChecked(com.inticube.teamboard.domain.Item i) {
+        UserPrincipal me = getMe();
+        if (me.isAdmin()) return;
+        if (i.getCreatedBy() != null && me.id().equals(i.getCreatedBy().getId())) return;
+        if (getCanManage(i.getBoard())) return;
+        throw new ApiException(HttpStatus.FORBIDDEN, "'" + i.getName() + "' 은(는) 등록한 사람이나 관리자만 삭제할 수 있습니다.");
+    }
+
     public void setManageChecked(Board b) {
         if (!getCanManage(b)) throw new ApiException(HttpStatus.FORBIDDEN, "워크스페이스 관리자만 변경할 수 있습니다.");
     }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useApp } from '../App.jsx'
-import { Avatar, Modal, useToast, useConfirm } from './common.jsx'
+import { Avatar, Modal, useToast, useConfirm, setAvatarOverride } from './common.jsx'
 import { Icon } from './icons.jsx'
 
 export function AdminUsers() {
@@ -69,6 +69,10 @@ export function AdminUsers() {
                     if (!(await confirm(`${u.name}(${u.username})의 2단계 인증을 초기화할까요?\n다음 로그인부터 인증 앱 없이 로그인되며, 본인이 다시 설정할 수 있습니다.`, { okText: '초기화' }))) return
                     try { await api.post(`/api/admin/users/${u.id}/mfa-reset`); toast('2단계 인증을 초기화했습니다.'); load() } catch (e) { toast(e.message, 'error') }
                   }}>2단계 초기화</button></>}
+                  {u.avatar && <>{' '}<button className="btn btn-sm" title="부적절한 프로필 사진 삭제" onClick={async () => {
+                    if (!(await confirm(`${u.name}(${u.username})의 프로필 사진을 삭제할까요?`, { okText: '삭제' }))) return
+                    try { await api.del(`/api/admin/users/${u.id}/avatar`); setAvatarOverride(u.id, null); toast('프로필 사진을 삭제했습니다.'); load(); refreshUsers() } catch (e) { toast(e.message, 'error') }
+                  }}>사진 삭제</button></>}
                 </td>
               </tr>
             ))}

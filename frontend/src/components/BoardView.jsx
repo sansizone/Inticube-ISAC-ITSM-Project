@@ -5,6 +5,7 @@ import { Avatar, Spinner, useToast, useConfirm } from './common.jsx'
 import { EMPTY_FILTERS, isFiltering, applyFilters, SearchToggle, GroupFilter, PriorityFilter, DueFilter, SortMenu, DutyFilter, StatusFilter, PersonFilter, BoardSwitcher, FieldFilter, TypeFilter, VersionFilter, SlaFilter, MoreFilters, hasValue } from './BoardFilters.jsx'
 import RoadmapView from './RoadmapView.jsx'
 import WikiView from './WikiView.jsx'
+import FormView from './FormView.jsx'
 import DutyView from './DutyView.jsx'
 import { buildDutyIndex } from '../dutyTree.js'
 import ListView from './ListView.jsx'
@@ -19,7 +20,8 @@ import { Icon } from './icons.jsx'
 import { useFavorite } from './Sidebar.jsx'
 import { ViewTabs, ColumnPicker, parseViewConfig } from './Views.jsx'
 import { MoveItemModal } from './Workspace.jsx'
-import { rememberRefs, columnsFor, columnConfig } from './Fields.jsx'
+import { BulkBar } from './BulkActions.jsx'
+import { rememberRefs, columnsFor, columnConfig, itemNoun, itemTitle, josa, withPeopleSources } from './Fields.jsx'
 
 export default function BoardView({ boardId, view, itemParam }) {
   const { me, users, refreshBoards } = useApp()
@@ -29,6 +31,7 @@ export default function BoardView({ boardId, view, itemParam }) {
   const [error, setError] = useState(null)
   const [settings, setSettings] = useState(null)
   const [moving, setMoving] = useState(null)
+  const [selected, setSelected] = useState(() => new Set()) // 일괄 작업용으로 체크한 업무
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [extra, setExtra] = useState([]) // '＋ 필터'로 꺼낸 조건
   const [sort, setSort] = useState({ key: 'manual', dir: 'asc' })
@@ -40,7 +43,7 @@ export default function BoardView({ boardId, view, itemParam }) {
   const pendingFilters = useRef(null)
 
   const lastLoad = useRef(0)
-  const load = useCallback(() => { lastLoad.current = Date.now(); return api.get(`/api/boards/${boardId}`).then((b) => { rememberRefs(b); setBoard({ ...b, views: (b.views || []).filter((v) => v.type !== 'duties') }); setError(null) })
+  const load = useCallback(() => { lastLoad.current = Date.now(); return api.get(`/api/boards/${boardId}`).then((b) => { rememberRefs(b); setBoard(withPeopleSources({ ...b, views: (b.views || []).filter((v) => v.type !== 'duties') })); setError(null) })
     .catch((e) => setError(e.message)) }, [boardId])
 
   useEffect(() => { load(); try { localStorage.setItem('tb.lastBoard', String(boardId)) } catch { /* 무시 */ } }, [load]) // eslint-disable-line
@@ -77,6 +80,14 @@ export default function BoardView({ boardId, view, itemParam }) {
       try {
         const saved = await api.patch(`/api/items/${id}`, patch)
         setItems((items) => items.map((i) => (i.id === id ? { ...i, ...saved, values: { ...(i.values || {}), ...(saved.values || {}) }, commentCount: i.commentCount, fileCount: i.fileCount } : i)))
+        // 서버가 연결 값을 자동으로 채웠으면(예: 직원 → 고객사) 표시 이름을 받으려고 다시 불러옴
+        if (patch.values && saved?.values && Object.keys(saved.values).some((k) => !(k in patch.values))) load()
+        // 상태 변경으로 자동화 규칙이 실행됐으면(그룹·워크스페이스 이동) 알려 주고 다시 불러옴
+        if ('statusId' in patch && !('groupId' in patch) && saved && prev && saved.groupId !== prev.groupId) {
+          const g = boardRef.current.groups.find((x) => x.id === saved.groupId)
+          toast(g ? `자동화: '${g.name}' 그룹으로 옮겼습니다.` : '자동화: 다른 워크스페이스로 옮겼습니다.', 'success')
+          load()
+        }
         return saved
       } catch (e) {
         setItems((items) => items.map((i) => (i.id === id ? prev : i)))
@@ -93,9 +104,15 @@ export default function BoardView({ boardId, view, itemParam }) {
         return item
       } catch (e) { toast(e.message, 'error') }
     },
+    /** 삭제 권한: 시스템 관리자, 워크스페이스 관리자, 등록한 사람 (서버도 같은 규칙으로 막음) */
+    canDelete(id) {
+      const b = boardRef.current, it = b?.items.find((i) => i.id === id)
+      return !!it && (me.role === 'ADMIN' || b.canManage || it.createdById === me.id)
+    },
     async deleteItem(id) {
       const it = boardRef.current.items.find((i) => i.id === id)
-      if (!(await confirm(`'${it.name}' 업무를 삭제할까요?\n댓글과 첨부파일도 함께 삭제됩니다.`, { okText: '삭제' }))) return false
+      const b = boardRef.current, noun = (it.parentId ? '하위 ' : '') + itemNoun(b)
+      if (!(await confirm(`'${itemTitle(b, it)}' ${noun}${josa(noun, '을/를')} 삭제할까요?\n${it.parentId ? '' : `하위 ${itemNoun(b)}·`}댓글·첨부파일도 함께 삭제됩니다.`, { okText: '삭제' }))) return false
       try {
         await api.del(`/api/items/${id}`)
         setItems((items) => items.filter((i) => i.id !== id))
@@ -127,7 +144,7 @@ export default function BoardView({ boardId, view, itemParam }) {
     async deleteGroup(id) {
       const g = boardRef.current.groups.find((x) => x.id === id)
       const count = boardRef.current.items.filter((i) => i.groupId === id).length
-      if (!(await confirm(`'${g.name}' 그룹을 삭제할까요?${count ? `\n포함된 업무 ${count}개도 함께 삭제됩니다.` : ''}`, { okText: '삭제' }))) return
+      if (!(await confirm(`'${g.name}' 그룹을 삭제할까요?${count ? `\n포함된 ${itemNoun(boardRef.current)} ${count}개도 함께 삭제됩니다.` : ''}`, { okText: '삭제' }))) return
       try {
         await api.del(`/api/groups/${id}`)
         setBoard((b) => ({ ...b, groups: b.groups.filter((x) => x.id !== id), items: b.items.filter((i) => i.groupId !== id) }))
@@ -143,11 +160,11 @@ export default function BoardView({ boardId, view, itemParam }) {
       setBoard((b) => ({ ...b, groups: gs }))
       try { await api.post(`/api/boards/${boardId}/groups/reorder`, { ids: gs.map((g) => g.id) }) } catch (e) { toast(e.message, 'error'); load() }
     },
-    openItem: (id) => navigate(`/board/${boardId}/${view}?item=${id}`),
+    openItem: (id) => navigate(`/board/${boardId}/${activeId || view || ""}?item=${id}`),
     moveItem: (id) => setMoving(boardRef.current.items.find((i) => i.id === id)),
     patchLocal: (id, patch) => setItems((items) => items.map((i) => (i.id === id ? { ...i, ...patch } : i))),
     reload: load,
-  }), [boardId, view, users, load, refreshBoards, toast]) // eslint-disable-line
+  }), [boardId, view, activeId, users, load, refreshBoards, toast]) // eslint-disable-line
 
   const dutyIndex = useMemo(() => buildDutyIndex(board ? board.duties || [] : []), [board?.duties]) // eslint-disable-line
   // 검색어 입력 중에도 화면이 버벅이지 않도록 필터 계산은 지연값으로, 결과는 메모
@@ -165,17 +182,36 @@ export default function BoardView({ boardId, view, itemParam }) {
   useEffect(() => {
     if (filters.watch === 'me' && watching == null) api.get('/api/me/watching').then((ids) => setWatching(new Set(ids))).catch(() => setWatching(new Set()))
   }, [filters.watch]) // eslint-disable-line
+  // 탭을 바꾸면 선택 해제, Esc 로도 해제 (열린 창·입력 중이 아닐 때)
+  useEffect(() => { setSelected(new Set()) }, [activeId])
+  useEffect(() => {
+    if (!selected.size) return
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || itemParam || document.querySelector('.modal, .popover')) return
+      const el = document.activeElement
+      if (el && (/^(TEXTAREA|SELECT)$/.test(el.tagName) || (el.tagName === 'INPUT' && el.type !== 'checkbox'))) return
+      setSelected(new Set())
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selected.size, itemParam])
   if (error) return <div className="page"><div className="form-error">{error}</div></div>
   if (!board) return <div className="center-screen"><Spinner /></div>
 
   const { statusById, topItems, subsByParent, filtered } = derived
+  const noun = itemNoun(board) // 이 워크스페이스에서 한 건을 부르는 말 (업무명 컬럼 이름 기준)
+  // 선택 목록: 삭제·이동으로 사라진 업무는 자동으로 빠짐
+  const liveIds = new Set(board.items.map((i) => i.id))
+  const selIds = new Set([...selected].filter((id) => liveIds.has(id)))
+  const setSel = (ids, on) => setSelected((cur) => { const n = new Set(cur); for (const id of ids) { if (on) n.add(id); else n.delete(id) } return n })
   const canManage = board.canManage
   const assignees = [...new Map(topItems.filter((i) => i.assignee).map((i) => [i.assignee.id, i.assignee])).values()]
   const filtering = isFiltering(deferredFilters)
   const viewKey = active?.type || 'list'
   const props = { board, items: filtered, statusById, ops, users, filtering, dutyIndex, subsByParent, hidden, sorted: sort.key !== 'manual', onClearFilter: () => setFilters(EMPTY_FILTERS),
     header: { sort, onSort: setSort, filters, onFilter: setF, onHide: (key) => setHidden([...hidden, key]), me },
-    canManage, onReload: () => load().then(refreshBoards), onColumnSettings: canManage ? () => setSettings('columns') : null }
+    canManage, onReload: () => load().then(refreshBoards), onColumnSettings: canManage ? () => setSettings('columns') : null,
+    selection: { has: (id) => selIds.has(id), set: setSel, size: selIds.size } }
   // 저장된 보기 설정과 지금 화면이 다르면 '보기 저장' 표시
   const currentConfig = { filters, sort, hidden }
   const saved = parseViewConfig(active, EMPTY_FILTERS)
@@ -203,7 +239,7 @@ export default function BoardView({ boardId, view, itemParam }) {
         subtitle={<>
           {board.description && <span>{board.description}</span>}
           <span className="phs-stat">{columnConfig(board).showProgress
-            ? <><span className="ring ring-light" style={{ '--p': topItems.length ? Math.floor(done / topItems.length * 100) : 0 }} /> 진행률 {topItems.length ? Math.floor(done / topItems.length * 100) : 0}% · 업무 {topItems.length}건</>
+            ? <><span className="ring ring-light" style={{ '--p': topItems.length ? Math.floor(done / topItems.length * 100) : 0 }} /> 진행률 {topItems.length ? Math.floor(done / topItems.length * 100) : 0}% · {noun} {topItems.length}건</>
             : <>{topItems.length}건</>}{board.items.length > topItems.length ? ` (하위 ${board.items.length - topItems.length}건)` : ''} · {board.isPublic ? <><Icon name="globe" size={12} /> 모든 사용자 공개</> : <><Icon name="lock" size={12} /> 멤버 전용</>}</span>
         </>}
         actions={<>
@@ -214,24 +250,23 @@ export default function BoardView({ boardId, view, itemParam }) {
           <FavoriteButton boardId={board.id} />
           <ExcelMenu board={board} onImported={() => { load(); refreshBoards() }} />
           <button className="btn btn-white btn-sm" title="워크스페이스 설정·멤버" onClick={() => setSettings('basic')}><Icon name={canManage ? 'settings' : 'users'} size={14} /> {canManage ? '설정' : '멤버'}</button>
-          <button className="btn btn-white btn-sm btn-strong" onClick={async () => {
-            const it = await ops.addItem(board.groups[0].id, '새 업무')
-            if (it) ops.openItem(it.id)
-          }}><Icon name="plus" size={14} /> 새 업무</button>
-        </>} />
+        </>}
+        primary={<button className="btn btn-primary btn-sm topbar-new" title={`새 ${noun}`} onClick={async () => {
+          const it = await ops.addItem(board.groups[0].id, `새 ${noun}`)
+          if (it) ops.openItem(it.id)
+        }}><Icon name="plus" size={14} /><span>새 {noun}</span></button>} />
 
       <div className="page page-wide">
         <div className="card board-card">
           <div className="card-header board-toolbar">
             <ViewTabs board={board} active={active} setBoard={setBoard} currentConfig={currentConfig} />
-            {!['duties', 'wiki', 'dashboard'].includes(viewKey) && (
+            {!['duties', 'wiki', 'dashboard', 'form'].includes(viewKey) && (
               <div className="filters">
-                <SearchToggle value={filters.q} onChange={(q) => setF({ q })} />
-                <button className={`chip-btn ${filters.assignee === 'me' ? 'on' : ''}`} onClick={() => setF({ assignee: filters.assignee === 'me' ? '' : 'me' })} title="내가 담당자인 업무만"><Icon name="user" size={13} /> 내 업무</button>
-                <button className={`chip-btn ${filters.status === 'open' ? 'on' : ''}`} onClick={() => setF({ status: filters.status === 'open' ? '' : 'open' })} title="완료된 업무 숨기기"><Icon name="check" size={13} /> 미완료</button>
+                <SearchToggle board={board} value={filters.q} onChange={(q) => setF({ q })} />
+                <button className={`chip-btn ${filters.assignee === 'me' ? 'on' : ''}`} onClick={() => setF({ assignee: filters.assignee === 'me' ? '' : 'me' })} title={`내가 담당자인 ${noun}만`}><Icon name="user" size={13} /> 내 {noun}</button>
                 <span className="filter-sep" />
                 <StatusFilter value={filters.status} onChange={(v) => setF({ status: v })} statuses={board.statuses} />
-                <PersonFilter value={filters.assignee} onChange={(v) => setF({ assignee: v })} users={users} me={me} />
+                <PersonFilter noun={noun} value={filters.assignee} onChange={(v) => setF({ assignee: v })} users={users} me={me} />
                 <DueFilter value={filters.due} onChange={(v) => setF({ due: v })} />
                 {extraShown.includes('priority') && <PriorityFilter value={filters.priority} onChange={(v) => setF({ priority: v })} />}
                 {extraShown.includes('version') && <VersionFilter value={filters.version} onChange={(v) => setF({ version: v })} versions={board.versions || []} />}
@@ -247,7 +282,7 @@ export default function BoardView({ boardId, view, itemParam }) {
                 {(viewKey === 'table' || viewKey === 'list') && <ColumnPicker board={board} hidden={hidden} keys={viewKey === 'list' ? ['priority', 'duty', 'status', 'start', 'due', 'assignee'] : null} onChange={setHidden} onManage={canManage ? () => setSettings('columns') : null} />}
               </div>
             )}
-            {dirty && (
+            {dirty && viewKey !== 'form' && (
               <div className="view-dirty">
                 <span>이 보기의 필터·정렬·컬럼이 바뀌었습니다.</span>
                 <button className="link" onClick={resetView}>되돌리기</button>
@@ -263,6 +298,7 @@ export default function BoardView({ boardId, view, itemParam }) {
             {viewKey === 'dashboard' && <BoardDashboard {...props} />}
             {viewKey === 'roadmap' && <RoadmapView {...props} setBoard={setBoard} canManage={canManage} />}
             {viewKey === 'wiki' && <WikiView board={board} />}
+            {viewKey === 'form' && <FormView board={board} view={active} canManage={canManage} items={board.items} onSubmitted={load} />}
             {viewKey === 'duties' && <DutyView board={board} index={dutyIndex} users={users} canManage={canManage} reload={load}
               onFilter={(id) => {
                 const target = board.views.find((v) => v.type === 'list') || board.views.find((v) => v.type === 'table')
@@ -284,6 +320,9 @@ export default function BoardView({ boardId, view, itemParam }) {
           refreshBoards()
           navigate(`/board/${boardId}/${active?.id || ''}`)
         }} />}
+      {selIds.size > 0 && (viewKey === 'list' || viewKey === 'table') && (
+        <BulkBar board={board} ids={[...selIds]} canDelete={ops.canDelete} confirm={confirm} onClear={() => setSelected(new Set())} onDone={load} />
+      )}
       {confirmDialog}
     </div>
   )

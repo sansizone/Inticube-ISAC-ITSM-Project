@@ -6,6 +6,7 @@ import com.inticube.teamboard.dao.ItemDao;
 import com.inticube.teamboard.dao.Rows;
 import com.inticube.teamboard.domain.Board;
 import com.inticube.teamboard.domain.BoardColumn;
+import com.inticube.teamboard.domain.ItemValue;
 import com.inticube.teamboard.web.ApiException;
 import com.inticube.teamboard.web.dto.Dtos.Backlink;
 import com.inticube.teamboard.web.dto.Dtos.PickOption;
@@ -38,6 +39,57 @@ public class RelationService {
         for (String p : v.split(",")) {
             try { Long id = Long.parseLong(p.trim()); if (!out.contains(id)) out.add(id); } catch (NumberFormatException ignored) {}
         }
+        return out;
+    }
+
+    /**
+     * 사람 컬럼의 후보 워크스페이스: 워크스페이스 컬럼 설정 peopleSources {"컬럼ID": 워크스페이스ID}.
+     * 지정하면 사람 고르기 창에 등록된 사용자와 함께 그 워크스페이스 항목 이름(예: 고객사직원정보의 직원)이 나온다.
+     */
+    public static Long getPeopleSource(Board board, Long columnId) {
+        if (board == null || board.getColumnConfig() == null || columnId == null) return null;
+        try {
+            var node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(board.getColumnConfig()).path("peopleSources").path(String.valueOf(columnId));
+            return node.canConvertToLong() && node.asLong() > 0 ? node.asLong() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 사람 컬럼 후보: 후보 워크스페이스의 상위 항목 이름 + 보조 설명(그 항목의 연결 값, 예: 소속 고객사) */
+    public List<PickOption> getPeopleOptions(Long columnId, String q, int limit) {
+        BoardColumn c = partsDao.selectColumnById(columnId);
+        if (c == null) throw ApiException.notFound("컬럼");
+        Long src = getPeopleSource(boardDao.selectById(c.getBoard().getId()), columnId);
+        if (src == null) return List.of();
+        guard.getBoardChecked(src);
+        List<BoardColumn> srcRel = partsDao.selectColumnsByBoard(src).stream()
+                .filter(x -> TYPE.equals(x.getType()) && "ITEM".equals(x.getScope())).toList();
+        String needle = q == null ? "" : q.trim().toLowerCase();
+        List<Map<String, Object>> rows = itemDao.selectPickRows(src);
+        List<Long> hitIds = new ArrayList<>();
+        Map<Long, String> names = new LinkedHashMap<>();
+        for (Map<String, Object> r : rows) {
+            String name = Rows.str(r, "item_name");
+            if (!needle.isEmpty() && !name.toLowerCase().contains(needle)) continue;
+            names.put(lng(r, "id"), name);
+            hitIds.add(lng(r, "id"));
+            if (hitIds.size() >= limit) break;
+        }
+        Map<Long, String> sub = new HashMap<>();
+        if (!srcRel.isEmpty() && !hitIds.isEmpty()) {
+            Map<Long, List<String>> colValues = new HashMap<>();
+            List<ItemValue> vals = itemDao.selectValuesByItems(hitIds).stream().filter(v -> srcRel.stream().anyMatch(x -> x.getId().equals(v.getColumnId()))).toList();
+            for (ItemValue v : vals) colValues.computeIfAbsent(v.getColumnId(), k -> new ArrayList<>()).add(v.getValue());
+            Map<Long, Map<Long, String>> labels = getLabels(srcRel, colValues);
+            for (ItemValue v : vals) {
+                Map<Long, String> lab = labels.getOrDefault(v.getColumnId(), Map.of());
+                String s = getIds(v.getValue()).stream().map(id -> lab.getOrDefault(id, "")).filter(x -> !x.isBlank()).reduce((a, b) -> a + ", " + b).orElse("");
+                if (!s.isEmpty()) sub.merge(v.getItemId(), s, (a, b) -> a + " · " + b);
+            }
+        }
+        List<PickOption> out = new ArrayList<>();
+        for (var e : names.entrySet()) out.add(new PickOption(e.getKey(), e.getValue(), sub.get(e.getKey())));
         return out;
     }
 

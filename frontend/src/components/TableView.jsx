@@ -3,7 +3,8 @@ import { StatusChip, AssigneeChip, DateChip, PriorityChip, DutyChip, TypeChip, S
 import { fmtHours, itemKey, blockedBy } from '../sla.js'
 import { Empty, Popover, usePopover } from './common.jsx'
 import { HeaderMenu, AddColumnButton } from './BoardFilters.jsx'
-import { boardColumns, columnConfig, builtinLabel } from './Fields.jsx'
+import { SelectBox } from './BulkActions.jsx'
+import { boardColumns, columnConfig, builtinLabel, BUILTIN_LABEL, addPlaceholder, itemNoun, josa } from './Fields.jsx'
 import { api } from '../api.js'
 import { Icon } from './icons.jsx'
 import { FieldView, FieldEditor, distinctValues, columnsFor, viewColumns } from './Fields.jsx'
@@ -15,7 +16,8 @@ const PAGE = 100
  * 표 보기: 워크스페이스 컬럼 설정(이름·순서·숨김) + 보기별 숨김을 따라 기본/사용자 정의 컬럼을 한 표에.
  * 상태·담당자·날짜·우선순위·담당업무는 바로 수정, 나머지는 상세 화면에서.
  */
-export default function TableView({ board, items, statusById, ops, users, filtering, dutyIndex, subsByParent = {}, hidden = [], header, canManage, onReload, onColumnSettings }) {
+export default function TableView({ board, items, statusById, ops, users, filtering, dutyIndex, subsByParent = {}, hidden = [], header, canManage, onReload, onColumnSettings, selection }) {
+  const noun = itemNoun(board)
   /** 헤더 메뉴 '오른쪽에 컬럼 추가': 새 컬럼을 이 컬럼 바로 뒤 순서로 넣고 다시 불러옴 */
   const addRight = async (afterKey, created) => {
     const keys = boardColumns(board).map((c) => c.key).filter((k) => k !== `c:${created.id}`)
@@ -23,6 +25,21 @@ export default function TableView({ board, items, statusById, ops, users, filter
     try { await api.put(`/api/boards/${board.id}/column-config`, { config: JSON.stringify({ ...columnConfig(board), order: keys }) }) } catch { /* 순서만 실패 → 맨 뒤 */ }
     await onReload?.()
   }
+  // 헤더 ⋯ 메뉴에서 컬럼 이름 바꾸기: 기본 컬럼은 워크스페이스 컬럼 설정의 labels, 사용자 정의 컬럼은 컬럼 자체
+  const renameCol = async (key, col, name) => {
+    const v = name.trim()
+    if (!v) return
+    if (col) {
+      await api.put(`/api/columns/${col.id}`, { name: v, type: col.type, scope: col.scope, visible: col.visible, refBoardId: col.refBoardId, refColumnId: col.refColumnId })
+    } else {
+      const cfg = columnConfig(board)
+      const labels = { ...cfg.labels }
+      if (v === BUILTIN_LABEL[key]) delete labels[key]; else labels[key] = v
+      await api.put(`/api/boards/${board.id}/column-config`, { config: JSON.stringify({ ...cfg, labels }) })
+    }
+    await onReload?.()
+  }
+  const renamer = (key, col) => (canManage ? (name) => renameCol(key, col, name) : null)
   // ---------- 컬럼 너비: 헤더 오른쪽 가장자리를 끌어 조절. 관리자는 워크스페이스 설정에, 그 외는 이 브라우저에 저장 ----------
   const lsKey = `tb.colw.${board.id}`
   const [widths, setWidths] = useState(() => {
@@ -60,6 +77,11 @@ export default function TableView({ board, items, statusById, ops, users, filter
   const groupName = Object.fromEntries(board.groups.map((g) => [g.id, g.name]))
   const update = (id) => (p) => ops.updateItem(id, p).catch(() => {})
   const colSpan = 3 + cols.length + (canManage ? 1 : 0)
+  // 일괄 선택 (BoardView 가 상태를 가짐)
+  const sel = selection
+  const allIds = items.map((i) => i.id)
+  const selCount = sel ? allIds.filter((id) => sel.has(id)).length : 0
+  const checkAll = (ids) => ({ checked: ids.length > 0 && ids.every((id) => sel.has(id)), partial: ids.some((id) => sel.has(id)) })
 
   // 드롭다운·사람 후보 값은 컬럼별로 한 번만 계산
   const optCache = useMemo(() => new Map(), [board.items]) // eslint-disable-line
@@ -100,16 +122,18 @@ export default function TableView({ board, items, statusById, ops, users, filter
     const st = statusById[it.statusId]
     const subs = sub ? [] : (subsByParent[it.id] || [])
     return (
-      <tr key={it.id} className={`${sub ? 'trow-sub' : ''} ${st?.done ? 'is-done' : ''}`}>
-        <td className="tcell-num sticky-a muted" title={`#${it.id}`}>{itemKey(board, it)}</td>
+      <tr key={it.id} className={`${sub ? 'trow-sub' : ''} ${st?.done ? 'is-done' : ''} ${sel?.has(it.id) ? 'is-selected' : ''}`}>
+        <td className="tcell-num sticky-a muted" title={`#${it.id}`}>
+          <span className="tkey">{sel && <SelectBox checked={sel.has(it.id)} label={`${it.name} 선택`} onChange={(on) => sel.set([it.id], on)} />}{itemKey(board, it)}</span>
+        </td>
         <td className="tcell-name sticky-b" style={widths.key ? { left: widths.key } : undefined}>
           <div className="tname">
             {sub ? <span className="sub-indent" /> : subs.length > 0
-              ? <button className={`sub-toggle ${open[it.id] ? 'on' : ''}`} onClick={() => setOpen({ ...open, [it.id]: !open[it.id] })} title={`하위 업무 ${subs.length}개`}>
+              ? <button className={`sub-toggle ${open[it.id] ? 'on' : ''}`} onClick={() => setOpen({ ...open, [it.id]: !open[it.id] })} title={`하위 ${noun} ${subs.length}개`}>
                   <Icon name={open[it.id] ? 'chevronDown' : 'chevronRight'} size={12} />{subs.length}
                 </button>
               : <span className="sub-toggle-space" />}
-            {!sub && blockedBy(it, board, statusById).length > 0 && <span className="blocked-mark" title="미완료 업무에 막혀 있음"><Icon name="alert" size={12} /></span>}
+            {!sub && blockedBy(it, board, statusById).length > 0 && <span className="blocked-mark" title={`미완료 ${noun}에 막혀 있음`}><Icon name="alert" size={12} /></span>}
             <button className="tname-btn" onClick={() => ops.openItem(it.id)} title={it.name}>{it.name}</button>
             {it.commentCount > 0 && <span className="meta-counts"><span><Icon name="chat" size={12} />{it.commentCount}</span></span>}
           </div>
@@ -118,22 +142,22 @@ export default function TableView({ board, items, statusById, ops, users, filter
           <td key={c.key} className={c.builtin ? `tcell-b-${c.key}` : `tcell-${c.col.type.toLowerCase()}`}
             onDoubleClick={c.builtin ? undefined : () => ops.openItem(it.id)}>{cell(c, it, sub)}</td>
         ))}
-        <td className="tcell-act"><RowMenu sub={sub} onOpen={() => ops.openItem(it.id)} onMove={() => ops.moveItem(it.id)} onDelete={() => ops.deleteItem(it.id)} /></td>
+        <td className="tcell-act"><RowMenu sub={sub} onOpen={() => ops.openItem(it.id)} onMove={() => ops.moveItem(it.id)} onDelete={ops.canDelete(it.id) ? () => ops.deleteItem(it.id) : null} /></td>
       </tr>
     )
   }
 
   return (
-    <div className="table-view">
+    <div className={`table-view ${selCount ? 'has-sel' : ''}`}>
       <div className="tv-scroll">
         <table className="tv">
           <thead>
             <tr>
-              <th className="sticky-a" style={wStyle('key')}>{header ? <HeaderMenu colKey="key" label={builtinLabel(board, 'key')} board={board} users={users} statusById={statusById} {...header} onHide={null} /> : builtinLabel(board, 'key')}{grip('key')}</th>
-              <th className="sticky-b" style={{ ...wStyle('name'), ...(widths.key ? { left: widths.key } : {}) }}>{header ? <HeaderMenu colKey="name" label={builtinLabel(board, 'name')} board={board} users={users} statusById={statusById} {...header} onHide={null} /> : builtinLabel(board, 'name')}{grip('name')}</th>
+              <th className="sticky-a" style={wStyle('key')}><span className="tkey">{sel && <SelectBox {...checkAll(allIds)} label={`보이는 ${noun} 모두 선택`} onChange={(on) => sel.set(allIds, on)} />}{header ? <HeaderMenu colKey="key" label={builtinLabel(board, 'key')} board={board} users={users} statusById={statusById} {...header} onHide={null} onRename={renamer('key')} /> : builtinLabel(board, 'key')}</span>{grip('key')}</th>
+              <th className="sticky-b" style={{ ...wStyle('name'), ...(widths.key ? { left: widths.key } : {}) }}>{header ? <HeaderMenu colKey="name" label={builtinLabel(board, 'name')} board={board} users={users} statusById={statusById} {...header} onHide={null} onRename={renamer('name')} /> : builtinLabel(board, 'name')}{grip('name')}</th>
               {cols.map((c) => (
                 <th key={c.key} title={c.label} style={wStyle(c.key, c.label)}>
-                  {header ? <HeaderMenu colKey={c.key} label={c.label} col={c.col} board={board} users={users} statusById={statusById} {...header} onHide={() => header.onHide(c.key)} onSettings={canManage ? onColumnSettings : null} onAddRight={canManage ? (created) => addRight(c.key, created) : null} /> : c.label}
+                  {header ? <HeaderMenu colKey={c.key} label={c.label} col={c.col} board={board} users={users} statusById={statusById} {...header} onHide={() => header.onHide(c.key)} onRename={renamer(c.key, c.builtin ? null : c.col)} onSettings={canManage ? onColumnSettings : null} onAddRight={canManage ? (created) => addRight(c.key, created) : null} /> : c.label}
                   {grip(c.key)}
                 </th>
               ))}
@@ -149,6 +173,7 @@ export default function TableView({ board, items, statusById, ops, users, filter
               <tbody key={g.id}>
                 <tr className="tv-group">
                   <td colSpan={colSpan}>
+                    {sel && list.length > 0 && <SelectBox {...checkAll(list.map((i) => i.id))} label={`${g.name} 그룹 모두 선택`} onChange={(on) => sel.set(list.map((i) => i.id), on)} />}
                     <button className="tv-group-btn" onClick={() => setCollapsed({ ...collapsed, [g.id]: !collapsed[g.id] })}>
                       <Icon name={collapsed[g.id] ? 'chevronRight' : 'chevronDown'} size={14} />
                       <span className="group-dot" style={{ background: g.color }} /> <b>{g.name}</b> <span className="muted">{list.length}</span>
@@ -165,24 +190,24 @@ export default function TableView({ board, items, statusById, ops, users, filter
                   <tr><td colSpan={colSpan}><button className="more-rows" onClick={() => setLimit({ ...limit, [g.id]: (limit[g.id] || PAGE) + PAGE * 2 })}>{list.length - shown.length}개 더 보기</button></td></tr>
                 )}
                 {!filtering && !collapsed[g.id] && (
-                  <tr className="tv-add"><td className="sticky-a" /><td className="sticky-b" colSpan={1} style={widths.key ? { left: widths.key } : undefined}><AddRow onAdd={(name) => ops.addItem(g.id, name)} /></td><td colSpan={colSpan - 2} /></tr>
+                  <tr className="tv-add"><td className="sticky-a" /><td className="sticky-b" colSpan={1} style={widths.key ? { left: widths.key } : undefined}><AddRow placeholder={addPlaceholder(board)} onAdd={(name) => ops.addItem(g.id, name)} /></td><td colSpan={colSpan - 2} /></tr>
                 )}
               </tbody>
             )
           })}
         </table>
       </div>
-      {filtering && items.length === 0 && <Empty icon="filter" title="조건에 맞는 업무가 없습니다" />}
+      {filtering && items.length === 0 && <Empty icon="filter" title={`조건에 맞는 ${noun}${josa(noun, '이/가')} 없습니다`} />}
     </div>
   )
 }
 
-function AddRow({ onAdd }) {
+function AddRow({ onAdd, placeholder }) {
   const [v, setV] = useState('')
   return (
     <div className="tv-add-row">
       <Icon name="plus" size={13} className="muted" />
-      <input placeholder="업무 추가 후 Enter" value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label="업무 추가"
+      <input placeholder={placeholder} value={v} maxLength={300} onChange={(e) => setV(e.target.value)} aria-label={placeholder}
         onKeyDown={async (e) => { if (e.key === 'Enter' && v.trim()) { const name = v.trim(); setV(''); await onAdd(name) } if (e.key === 'Escape') setV('') }} />
     </div>
   )
@@ -198,7 +223,9 @@ export function RowMenu({ sub, onOpen, onMove, onDelete }) {
           <div className="menu">
             <button className="menu-row" onClick={() => { pop.close(); onOpen() }}><Icon name="eye" size={14} /> 열기</button>
             {!sub && onMove && <button className="menu-row" onClick={() => { pop.close(); onMove() }}><Icon name="move" size={14} /> 다른 워크스페이스로 이동</button>}
-            <button className="menu-row danger" onClick={() => { pop.close(); onDelete() }}><Icon name="trash" size={14} /> 삭제</button>
+            {onDelete
+              ? <button className="menu-row danger" onClick={() => { pop.close(); onDelete() }}><Icon name="trash" size={14} /> 삭제</button>
+              : <div className="menu-row muted" title="등록한 사람이나 관리자만 삭제할 수 있습니다"><Icon name="lock" size={14} /> 삭제 권한 없음</div>}
           </div>
         </Popover>
       )}

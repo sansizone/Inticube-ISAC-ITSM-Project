@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react'
 import { api } from '../api.js'
 import { useApp, navigate } from '../App.jsx'
-import { Avatar, Modal, Popover, usePopover, useToast, Kbd } from './common.jsx'
+import { Avatar, Modal, Popover, usePopover, useToast, Kbd, setAvatarOverride } from './common.jsx'
 import { Icon } from './icons.jsx'
 import ChangePassword from './ChangePassword.jsx'
 import { MfaManage } from './Mfa.jsx'
@@ -20,6 +20,7 @@ export default function Topnav() {
       <div id="topbar-slot" className="topbar-slot" />
       <div className="topnav-right">
         <span className="topnav-vsep" />
+        <div id="topbar-primary" className="topbar-primary" />
         <button className="topnav-icon" onClick={openPalette} aria-label="검색 (Ctrl K)" title="검색 (Ctrl K)"><Icon name="search" size={18} /></button>
         <ThemeMenu />
         <AlertsDropdown />
@@ -106,6 +107,7 @@ export function UserDropdown() {
   const pop = usePopover()
   const [pw, setPw] = useState(false)
   const [mfa, setMfa] = useState(false)
+  const [photo, setPhoto] = useState(false)
   const toast = useToast()
   return (
     <>
@@ -121,6 +123,7 @@ export function UserDropdown() {
           </div>
           <div className="menu-sep" style={{ margin: 0 }} />
           <div className="menu">
+            <button className="menu-row" onClick={() => { pop.close(); setPhoto(true) }}><Icon name="camera" size={14} /> 프로필 사진 {me.avatar ? <span className="menu-meta">설정됨</span> : null}</button>
             <button className="menu-row" onClick={() => { pop.close(); setPw(true) }}><Icon name="key" size={14} /> 비밀번호 변경</button>
             <button className="menu-row" onClick={() => { pop.close(); setMfa(true) }}><Icon name="shield" size={14} /> 2단계 인증 {me.mfaEnabled ? <span className="tag tag-success" style={{ marginLeft: 'auto' }}>켜짐</span> : <span className="menu-meta">꺼짐</span>}</button>
             {me.role === 'ADMIN' && <a className="menu-row" href="#/admin" onClick={pop.close}><Icon name="settings" size={14} /> 관리자 설정</a>}
@@ -134,6 +137,92 @@ export function UserDropdown() {
         </Modal>
       )}
       {mfa && <MfaManage me={me} onClose={() => setMfa(false)} onChanged={(u) => setMe(u)} />}
+      {photo && <ProfilePhoto me={me} onClose={() => setPhoto(false)} onChanged={(v) => setMe({ ...me, avatar: v })} />}
     </>
+  )
+}
+
+const PHOTO_MAX = 5 * 1024 * 1024
+const PHOTO_SIZE = 256
+
+/** 이미지 파일 → 가운데 정사각형 256px PNG (webp 등 서버가 못 읽는 형식도 브라우저에서 변환).
+ *  CSP(img-src 'self' data:) 때문에 blob: 대신 data: 주소로 읽는다 */
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'))
+    r.readAsDataURL(file)
+  })
+}
+async function toSquarePng(file) {
+  const src = await readDataUrl(file)
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image()
+    im.onload = () => resolve(im)
+    im.onerror = () => reject(new Error('이미지를 읽을 수 없습니다.'))
+    im.src = src
+  })
+  const side = Math.min(img.naturalWidth, img.naturalHeight)
+  const out = Math.min(PHOTO_SIZE, side)
+  const c = document.createElement('canvas')
+  c.width = out; c.height = out
+  const g = c.getContext('2d')
+  g.imageSmoothingQuality = 'high'
+  g.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, out, out)
+  const blob = await new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('이미지 변환 실패'))), 'image/png'))
+  return { blob, url: c.toDataURL('image/png') }
+}
+
+/** 프로필 사진 등록·변경·삭제 */
+function ProfilePhoto({ me, onClose, onChanged }) {
+  const { refreshUsers } = useApp()
+  const toast = useToast()
+  const [preview, setPreview] = useState(null) // { blob, url }
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const fileRef = React.useRef(null)
+
+  const pick = async (file) => {
+    setErr(null)
+    if (!file) return
+    if (!/^image\/(jpeg|png|gif|webp)$/.test(file.type)) { setErr('JPG·PNG·GIF·WEBP 이미지만 올릴 수 있습니다.'); return }
+    if (file.size > PHOTO_MAX) { setErr('5MB 이하 이미지만 올릴 수 있습니다.'); return }
+    try {
+      setPreview(await toSquarePng(file))
+    } catch (e) { setErr(e.message) }
+  }
+  const done = (v, msg) => { setAvatarOverride(me.id, v); onChanged(v); refreshUsers?.(); toast(msg, 'success'); onClose() }
+  const save = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const r = await api.upload('/api/me/avatar', new File([preview.blob], 'avatar.png', { type: 'image/png' }))
+      done(r.avatar, '프로필 사진을 저장했습니다.')
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  const remove = async () => {
+    setBusy(true); setErr(null)
+    try { await api.del('/api/me/avatar'); done(null, '프로필 사진을 삭제했습니다.') } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal title="프로필 사진" onClose={onClose} width={400}>
+      <div className="photo-edit">
+        <div className="photo-preview">
+          {preview ? <span className="avatar" style={{ width: 120, height: 120 }}><img className="avatar-img" src={preview.url} alt="새 프로필 사진 미리보기" /></span>
+            : <Avatar user={me} size={120} />}
+        </div>
+        <p className="muted" style={{ margin: 0, fontSize: '0.8125rem', textAlign: 'center' }}>JPG·PNG·GIF·WEBP, 5MB 이하. 가운데를 정사각형으로 잘라 저장합니다.</p>
+        {err && <div className="form-error">{err}</div>}
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden
+          onChange={(e) => { pick(e.target.files?.[0]); e.target.value = '' }} />
+        <div className="photo-actions">
+          {me.avatar && !preview && <button className="btn btn-danger-ghost" disabled={busy} onClick={remove}><Icon name="trash" size={14} /> 삭제</button>}
+          <span className="grow" />
+          <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}><Icon name="upload" size={14} /> {preview || me.avatar ? '다른 사진 선택' : '사진 선택'}</button>
+          {preview && <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? '저장 중…' : '저장'}</button>}
+        </div>
+      </div>
+    </Modal>
   )
 }

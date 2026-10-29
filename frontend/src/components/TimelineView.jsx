@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar } from './common.jsx'
 import { StatusIcon } from './icons.jsx'
@@ -14,6 +15,7 @@ function mondayOf(s) {
 }
 
 export default function TimelineView({ board, items, statusById, ops }) {
+  const noun = itemNoun(board)
   const [zoom, setZoom] = useState('day')
   const [drag, setDrag] = useState(null) // { id, mode, x0, start, due, dStart, dDue }
   const scrollRef = useRef(null)
@@ -87,7 +89,7 @@ export default function TimelineView({ board, items, statusById, ops }) {
       </div>
       <div className="timeline-scroll" ref={scrollRef}>
         <div className="tl-row tl-head">
-          <div className="tl-left tl-left-head">업무</div>
+          <div className="tl-left tl-left-head">{noun}</div>
           <div className="tl-track" style={{ width }}>
             <div className="tl-months">
               {months.map((m) => (
@@ -155,7 +157,7 @@ export default function TimelineView({ board, items, statusById, ops }) {
             </React.Fragment>
           )
         })}
-        {items.length === 0 && <div className="muted" style={{ padding: 24 }}>표시할 업무가 없습니다.</div>}
+        {items.length === 0 && <div className="muted" style={{ padding: 24 }}>표시할 {noun}{josa(noun, '이/가')} 없습니다.</div>}
       </div>
     </div>
   )
