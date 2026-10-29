@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  워크스페이스 그룹 (TB_WS_GROUP, TB_WS_GROUP_MEMBER, TB_BOARD.WS_GROUP_ID)
+  - v3.2 업그레이드 SQL 로 만든다. 테이블이 없으면 WsGroupService 가 그룹 기능을 끄고 이 매퍼를 부르지 않는다
+-->
+<mapper namespace="com.inticube.teamboard.dao.WsGroupDao">
+
+  <resultMap id="grp" type="WsGroup">
+    <id     property="id"          column="id"/>
+    <result property="name"        column="group_name"/>
+    <result property="description" column="description"/>
+    <result property="sortOrder"   column="sort_order"/>
+    <result property="createdBy"   column="created_by"/>
+    <result property="createdAt"   column="created_at"/>
+  </resultMap>
+
+  <!-- 그룹 테이블 2개 + tb_board.ws_group_id 가 모두 있으면 3 -->
+  <select id="selectTableCount" resultType="long">
+    SELECT (SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = current_schema() AND table_name IN ('tb_ws_group', 'tb_ws_group_member'))
+         + (SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = 'tb_board' AND column_name = 'ws_group_id')
+  </select>
+
+  <select id="selectAll" resultMap="grp">
+    SELECT id, group_name, description, sort_order, created_by, created_at
+      FROM tb_ws_group
+     ORDER BY sort_order, id
+  </select>
+
+  <select id="selectById" resultMap="grp">
+    SELECT id, group_name, description, sort_order, created_by, created_at
+      FROM tb_ws_group
+     WHERE id = #{id}
+  </select>
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+    INSERT INTO tb_ws_group (group_name, description, sort_order, created_by, created_at)
+    VALUES (#{name}, #{description}, #{sortOrder}, #{createdBy}, #{createdAt})
+  </insert>
+
+  <update id="update">
+    UPDATE tb_ws_group
+       SET group_name = #{name}, description = #{description}, sort_order = #{sortOrder}
+     WHERE id = #{id}
+  </update>
+
+  <delete id="delete">
+    DELETE FROM tb_ws_group WHERE id = #{id}
+  </delete>
+
+  <select id="selectMaxSort" resultType="int">
+    SELECT COALESCE(MAX(sort_order), 0) FROM tb_ws_group
+  </select>
+
+  <!-- ===================================================================
+       멤버
+       =================================================================== -->
+  <select id="selectMembers" resultType="map">
+    SELECT m.group_id, m.user_id, m.member_role, u.username, u.display_name AS name, u.department, u.is_active
+      FROM tb_ws_group_member m
+      JOIN tb_app_user u ON u.id = m.user_id
+     WHERE m.group_id = #{groupId}
+     ORDER BY CASE m.member_role WHEN 'ADMIN' THEN 0 ELSE 1 END, u.display_name
+  </select>
+
+  <select id="selectRolesByUser" resultType="map">
+    SELECT group_id, member_role FROM tb_ws_group_member WHERE user_id = #{userId}
+  </select>
+
+  <select id="selectRole" resultType="string">
+    SELECT member_role FROM tb_ws_group_member WHERE group_id = #{groupId} AND user_id = #{userId}
+  </select>
+
+  <insert id="insertMember">
+    INSERT INTO tb_ws_group_member (group_id, user_id, member_role)
+    VALUES (#{groupId}, #{userId}, #{role})
+    ON CONFLICT (group_id, user_id) DO NOTHING
+  </insert>
+
+  <update id="updateMemberRole">
+    UPDATE tb_ws_group_member SET member_role = #{role} WHERE group_id = #{groupId} AND user_id = #{userId}
+  </update>
+
+  <delete id="deleteMember">
+    DELETE FROM tb_ws_group_member WHERE group_id = #{groupId} AND user_id = #{userId}
+  </delete>
+
+  <delete id="deleteMembersByGroup">
+    DELETE FROM tb_ws_group_member WHERE group_id = #{groupId}
+  </delete>
+
+  <select id="selectMemberCounts" resultType="map">
+    SELECT group_id, COUNT(*) AS cnt FROM tb_ws_group_member GROUP BY group_id
+  </select>
+
+  <!-- ===================================================================
+       워크스페이스의 그룹
+       =================================================================== -->
+  <select id="selectBoardGroups" resultType="map">
+    SELECT id, ws_group_id FROM tb_board
+  </select>
+
+  <select id="selectBoardGroup" resultType="long">
+    SELECT ws_group_id FROM tb_board WHERE id = #{boardId}
+  </select>
+
+  <update id="updateBoardGroup">
+    UPDATE tb_board SET ws_group_id = #{groupId} WHERE id = #{boardId}
+  </update>
+
+  <update id="updateBoardGroupWhereNull">
+    UPDATE tb_board SET ws_group_id = #{groupId} WHERE ws_group_id IS NULL
+  </update>
+
+  <select id="selectBoardCount" resultType="long">
+    SELECT COUNT(*) FROM tb_board WHERE ws_group_id = #{groupId}
+  </select>
+</mapper>

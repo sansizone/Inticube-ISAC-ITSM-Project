@@ -29,6 +29,7 @@ import static com.inticube.teamboard.dao.Rows.*;
 @RequiredArgsConstructor
 @Transactional
 public class ItemService {
+    private static final org.slf4j.Logger AUDIT = org.slf4j.LoggerFactory.getLogger("AUDIT");
     private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50}(?:@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)?)");  // @아이디 또는 @이메일아이디
 
     private final ItemDao itemDao;
@@ -277,7 +278,41 @@ public class ItemService {
         for (String log : logs) { if (log.startsWith("반복 업무")) insertSystemLog(i, actorFull, log); else changes.add(log); }
         insertChangeLog(i, actorFull, changes);
         if (statusTo[0] != null && i.getParent() == null) runAutomations(i, statusTo[0], actorFull);
+        if (changedValues != null) maskPhones(i.getBoard().getId(), changedValues);
         return BoardService.toDto(i, 0, 0, changedValues);
+    }
+
+    // ---------- 개인정보 (전화번호) ----------
+    /** 응답에 담을 값 중 전화번호 컬럼을 마스킹 */
+    private void maskPhones(Long boardId, Map<Long, String> vals) {
+        if (vals == null || vals.isEmpty()) return;
+        for (BoardColumn c : partsDao.selectColumnsByBoard(boardId))
+            if ("PHONE".equals(c.getType()) && vals.get(c.getId()) != null) vals.put(c.getId(), PhoneFormat.mask(vals.get(c.getId())));
+    }
+
+    /**
+     * 전화번호 수정 통제: 마스킹된 값은 저장 불가, 이미 값이 있는 번호를 바꾸거나 지우는 것은 관리자만.
+     * (빈 칸에 새로 입력하는 것은 누구나)
+     */
+    private void checkPhoneEdit(Item i, BoardColumn c, String next) {
+        if (PhoneFormat.isMasked(next)) throw ApiException.bad("'" + c.getName() + "' 은(는) 가려진 값으로 저장할 수 없습니다. 원문을 열람한 뒤 수정하세요.");
+        if (guard.getMe().isAdmin()) return;
+        boolean has = itemDao.selectValuesByItemAndColumns(i.getId(), Set.of(c.getId())).stream().anyMatch(v -> v.getValue() != null && !v.getValue().isBlank());
+        if (has) throw ApiException.forbidden();
+    }
+
+    /** 전화번호 원문 열람: 시스템 관리자만, 사유 필수. 업무 활동 기록(삭제 불가)과 서버 로그에 남긴다 */
+    public String getPhoneRevealed(Long itemId, Long columnId, String reason, UserPrincipal me) {
+        if (!me.isAdmin()) throw new ApiException(org.springframework.http.HttpStatus.FORBIDDEN, "전화번호 원문은 관리자만 볼 수 있습니다.");
+        String why = reason == null ? "" : reason.trim();
+        if (why.length() < 2 || why.length() > 200) throw ApiException.bad("열람 사유를 2~200자로 입력하세요.");
+        Item i = getItem(itemId);
+        BoardColumn c = partsDao.selectColumnById(columnId);
+        if (c == null || !c.getBoard().getId().equals(i.getBoard().getId()) || !"PHONE".equals(c.getType())) throw ApiException.bad("전화번호 컬럼이 아닙니다.");
+        String raw = itemDao.selectValuesByItemAndColumns(itemId, Set.of(columnId)).stream().map(ItemValue::getValue).findFirst().orElse("");
+        insertSystemLog(i, getUser(me.id()), "개인정보 열람: " + c.getName() + " (사유: " + why + ")");
+        AUDIT.info("PHONE_REVEAL user={} item={} column={} reason={}", me.id(), itemId, columnId, why.replaceAll("[\\r\\n]", " "));
+        return raw;
     }
 
     // ---------- 자동화 규칙 ----------
@@ -402,6 +437,7 @@ public class ItemService {
             if (c == null) throw ApiException.bad("이 워크스페이스의 컬럼이 아닙니다: " + e.getKey());
             String v = e.getValue() == null ? "" : e.getValue().toString();
             if (RelationService.TYPE.equals(c.getType())) v = normalizeRelation(c, v);
+            if ("PHONE".equals(c.getType())) checkPhoneEdit(i, c, v);
             req.put(cid, normalizeValue(c, v));
         }
         Map<Long, ItemValue> existing = itemDao.selectValuesByItemAndColumns(i.getId(), req.keySet()).stream()
@@ -422,6 +458,7 @@ public class ItemService {
             }
             out.put(c.getId(), next);
             if (RelationService.TYPE.equals(c.getType())) logs.add(c.getName() + ": " + shortLog(relNames(before)) + " → " + shortLog(relNames(next)));
+            else if ("PHONE".equals(c.getType())) logs.add(c.getName() + ": " + shortLog(PhoneFormat.mask(before)) + " → " + shortLog(PhoneFormat.mask(next)));
             else logs.add(c.getName() + ": " + shortLog(before) + " → " + shortLog(next));
         }
         return out;
@@ -587,6 +624,7 @@ public class ItemService {
         long commentCount = ups.stream().filter(u -> !u.system()).count();
         Map<Long, String> vals = new LinkedHashMap<>();
         for (ItemValue v : itemDao.selectValuesByItem(id)) vals.put(v.getColumnId(), v.getValue());
+        maskPhones(i.getBoard().getId(), vals);
         List<BoardColumn> relCols = partsDao.selectColumnsByBoard(i.getBoard().getId()).stream()
                 .filter(c -> RelationService.TYPE.equals(c.getType()) && vals.containsKey(c.getId())).toList();
         Map<Long, List<String>> relVals = new HashMap<>();

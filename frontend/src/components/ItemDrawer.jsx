@@ -160,7 +160,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                     <div className="props fields">
                       {fieldCols.map((c) => (
                         <Prop key={c.id} label={c.name}>
-                          <FieldEditor col={c} value={values[c.id] || ''} users={users} targetName={board.refBoards?.[c.refBoardId]}
+                          <FieldEditor col={c} itemId={itemId} value={values[c.id] || ''} users={users} targetName={board.refBoards?.[c.refBoardId]}
                             options={c.type === 'DROPDOWN' || c.type === 'PEOPLE' ? distinctValues(board.items, c) : []}
                             onSave={(v) => saveField(c, v)} />
                         </Prop>

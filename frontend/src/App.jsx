@@ -63,6 +63,7 @@ function Shell({ me, setMe }) {
   const [route, setRoute] = useState(parseHash)
   const [users, setUsers] = useState([])
   const [boards, setBoards] = useState([])
+  const [wsGroups, setWsGroups] = useState([]) // 워크스페이스 그룹 (그룹 > 워크스페이스)
   const [categories, setCategories] = useState([])
   const [unread, setUnread] = useState(0)
   // 데스크톱: true = 아이콘 레일로 접힘(기억함) / 모바일: true = 메뉴 열림
@@ -96,14 +97,15 @@ function Shell({ me, setMe }) {
   }, [])
 
   const refreshBoards = useCallback(() => api.get('/api/boards').then(setBoards).catch(() => {}), [])
+  const refreshGroups = useCallback(() => api.get('/api/ws-groups').then(setWsGroups).catch(() => setWsGroups([])), [])
   const refreshUsers = useCallback(() => api.get('/api/users').then(setUsers).catch(() => {}), [])
   const refreshCategories = useCallback(() => api.get('/api/post-categories').then(setCategories).catch(() => {}), [])
   const refreshUnread = useCallback(() => api.get('/api/notifications').then((d) => setUnread(d.unreadCount)).catch(() => {}), [])
   useEffect(() => {
-    refreshBoards(); refreshUsers(); refreshCategories(); refreshUnread()
+    refreshBoards(); refreshGroups(); refreshUsers(); refreshCategories(); refreshUnread()
     const t = setInterval(refreshUnread, 30000)
     return () => clearInterval(t)
-  }, [refreshBoards, refreshUsers, refreshCategories, refreshUnread])
+  }, [refreshBoards, refreshGroups, refreshUsers, refreshCategories, refreshUnread])
 
   const logout = useCallback(async () => {
     try { await api.post('/api/auth/logout') } catch { /* 무시 */ }
@@ -113,7 +115,7 @@ function Shell({ me, setMe }) {
   }, [setMe])
 
   const ctx = useMemo(() => ({
-    me, setMe, users, boards, categories, unread, logout,
+    me, setMe, users, boards, categories, unread, logout, wsGroups, refreshGroups,
     refreshBoards, refreshUsers, refreshCategories, refreshUnread,
     mentionNames: new Set(users.flatMap((u) => [u.username, u.name, `${u.name}(${(u.username || '').split('@')[0]})`])),
     openItem: (boardId, itemId) => navigate(`/board/${boardId}?item=${itemId}`),
@@ -128,7 +130,7 @@ function Shell({ me, setMe }) {
       return !v
     }),
     openPalette: () => setPalette(true),
-  }), [me, setMe, users, boards, categories, unread, logout, refreshBoards, refreshUsers, refreshCategories, refreshUnread, panelSection])
+  }), [me, setMe, users, boards, categories, unread, logout, wsGroups, refreshGroups, refreshBoards, refreshUsers, refreshCategories, refreshUnread, panelSection])
 
   let page
   switch (route.page) {

@@ -34,10 +34,10 @@ export default function ChangePassword({ forced, me, onDone, onLogout, onCancel 
       <label className="field"><span>현재 비밀번호</span>
         <input className="input" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} required autoFocus /></label>
       <label className="field"><span>새 비밀번호</span>
-        <input className="input" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} required /></label>
+        <input className="input" type="password" autoComplete="new-password" maxLength={20} value={next} onChange={(e) => setNext(e.target.value)} required /></label>
       <label className="field"><span>새 비밀번호 확인</span>
-        <input className="input" type="password" autoComplete="new-password" value={next2} onChange={(e) => setNext2(e.target.value)} required /></label>
-      <p className="hint">8~64자, 영문·숫자·특수문자 포함, 아이디 포함 불가</p>
+        <input className="input" type="password" autoComplete="new-password" maxLength={20} value={next2} onChange={(e) => setNext2(e.target.value)} required /></label>
+      <p className="hint">8~20자, 영문·숫자·특수문자 포함, 같은 문자 3번 연속·아이디 포함 불가</p>
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="form-actions">
         {forced ? <button type="button" className="btn" onClick={logout}>로그아웃</button>

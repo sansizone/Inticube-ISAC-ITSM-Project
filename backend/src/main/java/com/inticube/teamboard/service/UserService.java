@@ -25,6 +25,7 @@ public class UserService {
     private final AppUserDao userDao;
     private final PasswordEncoder encoder;
     private final TotpService totp;
+    private final WsGroupService wsGroups;
 
     public AppUser getUser(Long id) {
         AppUser u = userDao.selectById(id);
@@ -77,6 +78,7 @@ public class UserService {
         u.setPasswordHash(encoder.encode(temp));
         u.setMustChangePassword(true);
         userDao.insert(u);
+        wsGroups.insertUserToDefault(u.getId()); // 새 계정은 첫 워크스페이스 그룹 멤버로
         return new TempPasswordResponse(username, temp);
     }
 
@@ -157,6 +159,7 @@ public class UserService {
         u.setMustChangePassword(true);
         u.setPasswordHash(encoder.encode(PasswordPolicy.temporary()));
         userDao.insert(u);
+        wsGroups.insertUserToDefault(u.getId()); // 새 계정은 첫 워크스페이스 그룹 멤버로
         return u;
     }
 }

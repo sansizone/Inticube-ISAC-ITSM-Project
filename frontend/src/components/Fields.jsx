@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Avatar, Popover, usePopover } from './common.jsx'
+import { Avatar, Popover, usePopover, Modal, useToast } from './common.jsx'
+import { useApp } from '../App.jsx'
 import { Icon } from './icons.jsx'
 import { api } from '../api.js'
 import { itemKey as itemKeyOf } from '../sla.js'
@@ -45,13 +46,13 @@ export function columnConfig(board) {
 /** 기본 컬럼 표시 이름 (설정에서 바꾼 이름) */
 /**
  * 이 워크스페이스에서 한 건을 부르는 말. 업무명 컬럼 이름에서 끝의 '명'을 뗀다
- * (업무명→업무, 고객사명→고객사, 솔루션명→솔루션). '이름'·'Name'·'제목'처럼 일반 이름이면 '항목'.
+ * (업무명→업무, 고객사명→고객사, 요청제목→요청). '이름'·'Name'·'제목'처럼 일반 이름이면 '항목'.
  */
 export function itemNoun(board) {
   const label = builtinLabel(board, 'name').trim()
   if (label === BUILTIN_LABEL.name) return '업무'
   if (/^(이름|성명|명칭|제목|name|title)$/i.test(label)) return '항목'
-  return label.replace(/\s*(명|이름|name)$/i, '').trim() || '항목'
+  return label.replace(/\s*(명|이름|명칭|제목|name|title)$/i, '').trim() || '항목'
 }
 
 /** 조사: josa('고객사', '을/를') → '를', josa('업무', '이/가') → '가'. 한글이 아니면 '을(를)'처럼 둘 다 */
@@ -321,7 +322,8 @@ export function FieldEditor(props) {
   return <PlainFieldEditor {...props} />
 }
 
-function PlainFieldEditor({ col, value, onSave, options = [], users = [], compact }) {
+function PlainFieldEditor({ col, value, onSave, options = [], users = [], compact, itemId }) {
+  if (col.type === 'PHONE') return <PhoneField col={col} value={value} onSave={onSave} compact={compact} itemId={itemId} />
   if (col.type === 'PEOPLE') return <PeopleEditor col={col} value={value} onSave={onSave} options={options} users={users} compact={compact} />
   if (col.type === 'DROPDOWN') return <DropdownEditor value={value} onSave={onSave} options={options} compact={compact} />
   return <TextishFieldEditor col={col} value={value} onSave={onSave} compact={compact} />
@@ -533,4 +535,69 @@ function TextishFieldEditor({ col, value, onSave, compact }) {
     default:
       return <input className="input input-sm field-input" {...common} />
   }
+}
+
+/**
+ * 전화번호 칸: 서버가 가린 값(010-****-1234)을 보여 주고, 관리자만 사유를 남기고 원문 열람.
+ * 가려진 번호는 수정할 수 없고(관리자는 열람 후 수정), 빈 칸에는 누구나 새로 입력.
+ * 열람한 원문은 1분 뒤 다시 가림.
+ */
+const REVEAL_REASONS = ['장애 대응 연락', '작업 일정 협의', '고객 요청 처리', '정보 확인·수정']
+function PhoneField({ col, value, onSave, compact, itemId }) {
+  const { me } = useApp()
+  const [raw, setRaw] = useState(null)
+  const [asking, setAsking] = useState(false)
+  useEffect(() => { setRaw(null) }, [value, itemId])
+  useEffect(() => { if (raw == null) return undefined; const t = setTimeout(() => setRaw(null), 60000); return () => clearTimeout(t) }, [raw])
+  const masked = !!value && value.includes('*')
+  if (!masked) return <TextishFieldEditor col={col} value={value} onSave={onSave} compact={compact} />
+  if (raw != null) {
+    return (
+      <span className="phone-revealed">
+        <TextishFieldEditor col={col} value={raw} onSave={(v) => { onSave(v); setRaw(null) }} compact={compact} />
+        <button type="button" className="link small" onClick={(e) => { e.stopPropagation(); setRaw(null) }}>가리기</button>
+      </span>
+    )
+  }
+  return (
+    <span className="phone-masked" title={me.role === 'ADMIN' ? '관리자는 사유를 남기고 원문을 볼 수 있습니다' : '개인정보 보호를 위해 가려진 번호입니다'}>
+      <FieldView col={col} value={value} compact={compact} />
+      {me.role === 'ADMIN' && itemId && <button type="button" className="link small" onClick={(e) => { e.stopPropagation(); setAsking(true) }}>열람</button>}
+      {asking && <RevealModal itemId={itemId} col={col} onClose={() => setAsking(false)} onRevealed={(v) => { setRaw(v); setAsking(false) }} />}
+    </span>
+  )
+}
+
+function RevealModal({ itemId, col, onClose, onRevealed }) {
+  const toast = useToast()
+  const [pick, setPick] = useState(REVEAL_REASONS[0])
+  const [etc, setEtc] = useState('')
+  const [busy, setBusy] = useState(false)
+  const reason = pick === '기타' ? etc.trim() : pick
+  const submit = async (e) => {
+    e.preventDefault()
+    if (reason.length < 2) { toast('열람 사유를 입력하세요.', 'error'); return }
+    setBusy(true)
+    try { const r = await api.post(`/api/items/${itemId}/reveal-phone`, { columnId: col.id, reason }); onRevealed(r.value || '') }
+    catch (err) { toast(err.message, 'error') } finally { setBusy(false) }
+  }
+  return (
+    <Modal title={`개인정보 열람 · ${col.name}`} onClose={onClose} width={420}>
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()}>
+        <p className="hint" style={{ marginTop: 0 }}>열람 기록(열람자·시각·사유)은 업무 활동 기록과 감사 로그에 남고 삭제할 수 없습니다.</p>
+        <div className="field"><span>열람 사유</span>
+          <div className="reveal-reasons">
+            {[...REVEAL_REASONS, '기타'].map((r) => (
+              <label key={r} className="check-line"><input type="radio" name="reveal" checked={pick === r} onChange={() => setPick(r)} /><span>{r}</span></label>
+            ))}
+          </div>
+          {pick === '기타' && <input className="input" autoFocus maxLength={200} value={etc} onChange={(e) => setEtc(e.target.value)} placeholder="열람 사유를 입력하세요" />}
+        </div>
+        <div className="form-actions">
+          <button type="button" className="btn" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" disabled={busy}>열람</button>
+        </div>
+      </form>
+    </Modal>
+  )
 }

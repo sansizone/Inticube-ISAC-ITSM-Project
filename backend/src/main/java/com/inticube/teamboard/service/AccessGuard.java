@@ -12,10 +12,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * 워크스페이스(보드) 접근 확인. 관리자는 전체, 공개 워크스페이스는 모든 사용자, 비공개는 멤버만.
+ * 워크스페이스 그룹(v3.2)이 있으면 그 그룹 멤버로 한정하고, 그룹 관리자는 그룹 안 전체를 보고 관리한다.
  * 그 안의 그룹·업무·댓글·첨부·컬럼·담당업무·보기도 같은 기준.
  */
 @Service
@@ -27,6 +29,7 @@ public class AccessGuard {
     private final ItemDao itemDao;
     private final ItemExtraDao extraDao;
     private final BoardDutyDao dutyDao;
+    private final WsGroupService groups;
 
     public UserPrincipal getMe() {
         Authentication a = SecurityContextHolder.getContext().getAuthentication();
@@ -40,12 +43,25 @@ public class AccessGuard {
         if (me.isAdmin()) return null;
         Set<Long> ids = new HashSet<>(boardDao.selectPublicIds());
         ids.addAll(partsDao.selectBoardIdsByUser(me.id()));
+        if (!groups.isEnabled()) return ids;
+        // 워크스페이스 그룹: 그룹 멤버가 아니면 안 보이고, 그룹 관리자는 그 그룹 워크스페이스를 모두 본다
+        Map<Long, String> roles = groups.getMyRoles(me.id());
+        Map<Long, Long> boardGroup = groups.getBoardGroups();
+        ids.removeIf(id -> { Long g = boardGroup.get(id); return g != null && !roles.containsKey(g); });
+        for (var e : boardGroup.entrySet()) if ("ADMIN".equals(roles.get(e.getValue()))) ids.add(e.getKey());
         return ids;
     }
 
     public boolean getCanSee(Board b) {
         UserPrincipal me = getMe();
-        return me.isAdmin() || b.isPublic() || partsDao.selectMemberExists(b.getId(), me.id());
+        if (me.isAdmin()) return true;
+        Long g = groups.getBoardGroup(b.getId());
+        if (g != null) {
+            String role = groups.getRole(g, me.id());
+            if (role == null) return false;
+            if ("ADMIN".equals(role)) return true;
+        }
+        return b.isPublic() || partsDao.selectMemberExists(b.getId(), me.id());
     }
 
     public static boolean isVisible(Board b, Set<Long> ids) {
@@ -56,6 +72,7 @@ public class AccessGuard {
     public boolean getCanManage(Board b) {
         UserPrincipal me = getMe();
         if (me.isAdmin() || (b.getOwner() != null && me.id().equals(b.getOwner().getId()))) return true;
+        if ("ADMIN".equals(groups.getRole(groups.getBoardGroup(b.getId()), me.id()))) return true; // 그룹 관리자
         BoardMember m = partsDao.selectMember(b.getId(), me.id());
         return m != null && "OWNER".equals(m.getRole());
     }

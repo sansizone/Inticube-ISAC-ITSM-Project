@@ -1733,3 +1733,41 @@ button.dash-card:hover { border-color: var(--border-2); }
   .topbar-new { width: 2.25rem; height: 2.25rem; padding: 0; justify-content: center; border-radius: 50%; }
   .topbar-new span { display: none; }
 }
+
+/* ---------- 워크스페이스 그룹 (사이드바) ---------- */
+.side-group { margin-bottom: 0.25rem; }
+.side-group-head { display: flex; align-items: center; gap: 0.125rem; padding: 0.375rem 0.25rem 0.125rem 0.375rem; }
+.side-group-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; font-weight: 700; color: var(--fg-3); text-align: left; padding: 0.125rem 0; }
+.side-group-toggle:hover { color: var(--fg-1); }
+.side-group-count { font-weight: 400; color: var(--fg-4); margin-left: 0.125rem; }
+.side-group-actions { display: flex; gap: 0.125rem; opacity: 0; transition: opacity .15s; }
+.side-group-head:hover .side-group-actions, .side-group-head:focus-within .side-group-actions { opacity: 1; }
+@media (hover: none) { .side-group-actions { opacity: 1; } }
+
+/* ---------- 전화번호 마스킹 ---------- */
+.phone-masked, .phone-revealed { display: inline-flex; align-items: center; gap: 0.375rem; max-width: 100%; }
+.phone-masked .link, .phone-revealed .link { flex: none; font-size: 0.75rem; }
+.reveal-reasons { display: flex; flex-direction: column; gap: 0.375rem; margin-bottom: 0.5rem; }
+
+/* 워크스페이스 그룹 전환 드롭다운 */
+.wsg-switch-wrap { padding: 0 0.625rem 0.5rem; flex: none; }
+.wsg-switch { width: 100%; display: flex; align-items: center; gap: 0.5rem; padding: 0.4375rem 0.5625rem; background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; font: inherit; font-size: 0.875rem; font-weight: 600; color: var(--fg-1); cursor: pointer; text-align: left; }
+.wsg-switch:hover { border-color: var(--border-2); background: var(--surface-2); }
+.wsg-switch[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.wsg-switch > .icon:last-child { color: var(--fg-3); flex: none; }
+.wsg-mark { width: 1.375rem; height: 1.375rem; border-radius: 0.3125rem; color: #fff; font-size: 0.75rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.wsg-mark.sm { width: 1.125rem; height: 1.125rem; font-size: 0.6875rem; border-radius: 0.25rem; }
+.wsg-def { color: var(--accent); flex: none; display: inline-flex; }
+.wsg-row.on { background: var(--active); color: var(--accent); font-weight: 600; }
+.wsg-star { display: inline-flex; padding: 2px; border-radius: 4px; color: var(--fg-5); flex: none; }
+.wsg-row:hover .wsg-star { color: var(--fg-4); }
+.wsg-star:hover { color: var(--accent) !important; background: var(--hover); }
+.wsg-star.on, .wsg-row:hover .wsg-star.on { color: var(--accent); }
+.wsg-star.on { background: var(--accent-soft); }
+.dash-notice { display: flex; flex-direction: column; margin: 0 -0.5rem 0.25rem; }
+.dash-notice-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; border-radius: 0.625rem; color: var(--fg-1); min-width: 0; font-size: 0.875rem; }
+.dash-notice-row:hover { background: var(--hover); }
+.dash-notice-row b { flex: 1; min-width: 0; font-weight: 500; }
+.dash-notice-row .pin-badge { flex: none; }
+.dash-new { flex: none; font-size: 0.625rem; font-weight: 700; color: #fff; background: var(--danger); border-radius: 999px; padding: 0 0.3125rem; line-height: 1rem; }
+.dash-notice-date { flex: none; font-size: 0.75rem; color: var(--fg-4); }

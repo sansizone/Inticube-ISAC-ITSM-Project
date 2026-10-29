@@ -7,13 +7,15 @@ import { Icon } from './icons.jsx'
 
 /** 워크스페이스 공개 범위 선택 */
 export function VisibilityPicker({ value, onChange, disabled }) {
+  const { wsGroups } = useApp()
+  const grouped = wsGroups?.length > 0
   return (
     <div className="vis-picker">
       <button type="button" disabled={disabled} className={`vis-opt ${!value ? 'active' : ''}`} onClick={() => onChange(false)}>
         <Icon name="lock" size={15} /><span><b>멤버만</b><em>추가한 멤버와 관리자만 볼 수 있음</em></span>
       </button>
       <button type="button" disabled={disabled} className={`vis-opt ${value ? 'active' : ''}`} onClick={() => onChange(true)}>
-        <Icon name="globe" size={15} /><span><b>모든 사용자</b><em>로그인한 사람 누구나 보고 쓸 수 있음</em></span>
+        <Icon name="globe" size={15} /><span><b>{grouped ? '그룹 전체' : '모든 사용자'}</b><em>{grouped ? '이 워크스페이스 그룹 멤버 누구나 보고 쓸 수 있음' : '로그인한 사람 누구나 보고 쓸 수 있음'}</em></span>
       </button>
     </div>
   )
@@ -21,7 +23,15 @@ export function VisibilityPicker({ value, onChange, disabled }) {
 
 /** 워크스페이스 멤버·공개 범위 편집 (설정 › 멤버 탭) */
 export function MembersEditor({ board, onSaved }) {
-  const { users, me, refreshBoards } = useApp()
+  const { users: allUsers, me, refreshBoards, boards, wsGroups } = useApp()
+  // 워크스페이스 그룹이 있으면 그 그룹 멤버 중에서만 추가 (그룹 밖 사용자는 추가해도 볼 수 없음)
+  const groupId = boards.find((b) => b.id === board.id)?.groupId
+  const [groupUsers, setGroupUsers] = useState(null)
+  useEffect(() => {
+    if (!groupId || !wsGroups.length) { setGroupUsers(null); return }
+    api.get(`/api/ws-groups/${groupId}/members`).then((l) => setGroupUsers(new Set(l.map((m) => m.userId)))).catch(() => setGroupUsers(null))
+  }, [groupId, wsGroups.length])
+  const users = groupUsers ? allUsers.filter((u) => groupUsers.has(u.id)) : allUsers
   const toast = useToast()
   const [list, setList] = useState(null)
   const [isPublic, setPublic] = useState(board.isPublic)
