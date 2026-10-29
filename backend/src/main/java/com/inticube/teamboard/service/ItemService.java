@@ -94,6 +94,7 @@ public class ItemService {
         String boardName = i.getBoard().getName();
         List<String> logs = new ArrayList<>();
         List<Runnable> after = new ArrayList<>(); // 본 업무 저장 뒤 실행할 후속 작업
+        BoardStatus[] statusTo = { null };       // 이번 수정으로 바뀐 상태 (자동화 규칙 실행용)
 
         if (body.containsKey("name")) {
             String name = str(body.get("name"));
@@ -115,6 +116,7 @@ public class ItemService {
                 if (!next.getBoard().getId().equals(i.getBoard().getId())) throw ApiException.bad("다른 보드의 상태입니다.");
             }
             if (!Objects.equals(id(before), id(next))) {
+                statusTo[0] = next;
                 i.setStatus(next);
                 logs.add("상태: " + label(before) + " → " + label(next));
                 if (i.getRespondedAt() == null) i.setRespondedAt(LocalDateTime.now());
@@ -261,7 +263,12 @@ public class ItemService {
             }
         }
         Map<Long, String> changedValues = null;
-        if (body.get("values") instanceof Map<?, ?> vm && !vm.isEmpty()) changedValues = updateValues(i, vm, logs);
+        if (body.get("values") instanceof Map<?, ?> vm && !vm.isEmpty()) {
+            changedValues = updateValues(i, vm, logs);
+            // 연결 값을 고르면 그 항목에 연결된 다른 워크스페이스 값도 함께 채움 (예: 서비스요청자 → 그 직원의 고객사)
+            Map<Long, String> auto = getRelationAutoFill(i, changedValues, vm.keySet());
+            if (!auto.isEmpty()) changedValues.putAll(updateValues(i, auto, logs));
+        }
         i.setUpdatedAt(LocalDateTime.now());
         itemDao.update(i);
         after.forEach(Runnable::run);
@@ -269,7 +276,71 @@ public class ItemService {
         List<String> changes = new ArrayList<>();
         for (String log : logs) { if (log.startsWith("반복 업무")) insertSystemLog(i, actorFull, log); else changes.add(log); }
         insertChangeLog(i, actorFull, changes);
+        if (statusTo[0] != null && i.getParent() == null) runAutomations(i, statusTo[0], actorFull);
         return BoardService.toDto(i, 0, 0, changedValues);
+    }
+
+    // ---------- 자동화 규칙 ----------
+    /**
+     * 워크스페이스 설정(column_config.automations)의 규칙 중 '상태가 X 가 되면' 에 맞는 첫 규칙을 실행.
+     * 그룹 이동 또는 다른 워크스페이스로 이동. 규칙은 관리자가 저장할 때 검증하므로 실행 시 권한은 다시 보지 않음.
+     */
+    private void runAutomations(Item i, BoardStatus status, AppUser actor) {
+        Board full = boardDao.selectById(i.getBoard().getId()); // 업무 조회 시 워크스페이스 설정(JSON)은 같이 읽지 않음
+        for (Automations.Rule r : Automations.read(full == null ? null : full.getColumnConfig())) {
+            if (!status.getId().equals(r.statusId())) continue;
+            if ("group".equals(r.action())) {
+                BoardGroup g = r.groupId() == null ? null : partsDao.selectGroupById(r.groupId());
+                if (g == null || !g.getBoard().getId().equals(i.getBoard().getId()) || g.getId().equals(i.getGroup().getId())) return;
+                String fromName = i.getGroup().getName();
+                i.setGroup(g);
+                i.setSortOrder(itemDao.selectMaxSort(g.getId()) + 1);
+                itemDao.update(i);
+                itemDao.updateGroupOfChildren(i.getId(), g.getId());
+                insertSystemLog(i, actor, "자동화: '" + status.getLabel() + "' → 그룹 이동 " + fromName + " → " + g.getName());
+            } else if ("board".equals(r.action())) {
+                Board to = r.boardId() == null ? null : boardDao.selectById(r.boardId());
+                if (to == null || to.getId().equals(i.getBoard().getId())) return;
+                moveToBoard(i, to, r.groupId(), actor, "자동화: '" + status.getLabel() + "' → 워크스페이스 이동");
+            }
+            return;
+        }
+    }
+
+    // ---------- 양식 보기 ----------
+    /**
+     * 양식 보기로 접수. 보기 설정(config): { groupId, statusId, fields: [{ key: "description" | 컬럼ID, required }] }
+     * 업무명(name)은 항상 필수. 설정에 없는 항목은 받지 않음.
+     */
+    public ItemDto insertFormItem(Long viewId, FormSubmitRequest req, UserPrincipal me) {
+        guard.getViewChecked(viewId);
+        BoardView v = partsDao.selectViewById(viewId);
+        if (!"form".equals(v.getType())) throw ApiException.bad("양식 보기가 아닙니다.");
+        Automations.Form f = Automations.readForm(v.getConfig());
+        String name = req.name() == null ? "" : req.name().trim();
+        if (name.isEmpty()) throw ApiException.bad("제목을 입력하세요.");
+        List<BoardGroup> groups = partsDao.selectGroupsByBoard(v.getBoardId());
+        BoardGroup g = groups.stream().filter(x -> x.getId().equals(f.groupId())).findFirst().orElse(groups.isEmpty() ? null : groups.get(0));
+        if (g == null) throw ApiException.bad("워크스페이스에 그룹이 없습니다.");
+        Map<String, Object> in = req.values() == null ? Map.of() : req.values();
+        Map<String, Object> body = new HashMap<>();
+        Map<String, Object> vals = new LinkedHashMap<>();
+        for (Automations.Field fd : f.fields()) {
+            Object raw = in.get(fd.key());
+            String val = raw == null ? "" : raw.toString().trim();
+            if (fd.required() && val.isEmpty()) throw ApiException.bad("필수 항목을 입력하세요.");
+            if (val.isEmpty()) continue;
+            if ("description".equals(fd.key())) body.put("description", val); else vals.put(fd.key(), val);
+        }
+        ItemDto created = insertItem(g.getId(), new ItemCreateRequest(name.length() > 300 ? name.substring(0, 300) : name, null), me);
+        if (f.statusId() != null) {
+            BoardStatus st = partsDao.selectStatusById(f.statusId());
+            if (st != null && st.getBoard().getId().equals(v.getBoardId())) body.put("statusId", st.getId());
+        }
+        if (!vals.isEmpty()) body.put("values", vals);
+        ItemDto out = body.isEmpty() ? created : updateItem(created.id(), body, me);
+        insertSystemLog(getItem(created.id()), getUser(me.id()), "양식으로 접수: " + v.getName());
+        return out;
     }
 
     private static String hours(BigDecimal h) { return h == null ? "없음" : h.stripTrailingZeros().toPlainString() + "h"; }
@@ -357,6 +428,7 @@ public class ItemService {
     }
 
     /** 연결 컬럼 값: 대상 워크스페이스에 있는 업무 ID 만 남김 */
+    /** 연결 값 정리: 대상 워크스페이스에 있는 업무 ID 만 남김 (입력 순서 유지) */
     private String normalizeRelation(BoardColumn c, String v) {
         List<Long> ids = RelationService.getIds(v);
         if (ids.isEmpty()) return "";
@@ -364,6 +436,90 @@ public class ItemService {
         Set<Long> ok = new HashSet<>();
         for (Map<String, Object> r : itemDao.selectNames(ids)) if (Objects.equals(lng(r, "board_id"), c.getRefBoardId())) ok.add(lng(r, "id"));
         return ids.stream().filter(ok::contains).map(String::valueOf).collect(Collectors.joining(","));
+    }
+
+    /**
+     * 연결 값 자동 채움. 이 워크스페이스에 연결 컬럼 C(→ T)와 D(→ X)가 있고 T 와 X 가 서로 연결돼 있으면
+     * (T 의 연결 컬럼이 X 를 가리키거나, X 의 연결 컬럼이 T 를 가리킴) C 에서 고른 T 항목들과 연결된 X 항목을 D 에 더한다.
+     * 예: 서비스요청자(→ 고객사직원정보)에서 직원을 고르면 고객사(→ 고객사관리)에 그 직원의 고객사가 들어간다.
+     * 이미 들어 있는 값은 그대로 두고 빠진 것만 더하며, 같은 요청에서 직접 바꾼 컬럼은 건드리지 않는다.
+     */
+    private Map<Long, String> getRelationAutoFill(Item i, Map<Long, String> changed, Set<?> requestedKeys) {
+        Map<Long, String> out = new LinkedHashMap<>();
+        if (changed == null || changed.isEmpty()) return out;
+        Set<Long> requested = new HashSet<>();
+        for (Object k : requestedKeys) { Long id = toLong(k); if (id != null) requested.add(id); }
+        List<BoardColumn> allCols = partsDao.selectColumnsByBoard(i.getBoard().getId());
+        List<BoardColumn> rels = allCols.stream()
+                .filter(c -> RelationService.TYPE.equals(c.getType()) && c.getRefBoardId() != null).toList();
+        if (rels.isEmpty()) return out;
+        Board board = boardDao.selectById(i.getBoard().getId());
+        Map<Long, String> current = null;
+        for (BoardColumn c : allCols) {
+            if (!changed.containsKey(c.getId())) continue;
+            // 고른 항목: 연결 컬럼이면 업무 ID, 후보 워크스페이스가 있는 사람 컬럼이면 이름이 같은 그 워크스페이스 항목
+            Long t;
+            List<Long> picked;
+            if (RelationService.TYPE.equals(c.getType()) && c.getRefBoardId() != null) {
+                t = c.getRefBoardId();
+                picked = RelationService.getIds(changed.get(c.getId()));
+            } else if ("PEOPLE".equals(c.getType()) && (t = RelationService.getPeopleSource(board, c.getId())) != null) {
+                Set<String> want = new HashSet<>();
+                for (String n : changed.get(c.getId()).split("[,;\\n]")) if (!n.isBlank()) want.add(n.trim().toLowerCase());
+                picked = new ArrayList<>();
+                for (Map<String, Object> r : itemDao.selectPickRows(t))
+                    if (want.contains(Rows.str(r, "item_name").trim().toLowerCase())) picked.add(lng(r, "id"));
+            } else continue;
+            if (picked.isEmpty()) continue;
+            final Long tb = t;
+            List<BoardColumn> tCols = partsDao.selectColumnsByBoard(tb);
+            for (BoardColumn d : rels) {
+                Long x = d.getRefBoardId();
+                if (d.getId().equals(c.getId()) || x.equals(tb) || requested.contains(d.getId()) || !d.getScope().equals(c.getScope())) continue;
+                LinkedHashSet<Long> mapped = new LinkedHashSet<>();
+                // (a) T 쪽 연결 컬럼이 X 를 가리킴: 직원 → 고객사
+                Set<Long> eIds = tCols.stream().filter(e -> RelationService.TYPE.equals(e.getType()) && x.equals(e.getRefBoardId()))
+                        .map(BoardColumn::getId).collect(Collectors.toSet());
+                if (!eIds.isEmpty())
+                    for (ItemValue v : itemDao.selectValuesByItems(picked))
+                        if (eIds.contains(v.getColumnId())) mapped.addAll(RelationService.getIds(v.getValue()));
+                // (b) X 쪽 연결 컬럼이 T 를 가리킴: 고객사 → 직원 목록
+                List<Long> fIds = partsDao.selectColumnsByBoard(x).stream()
+                        .filter(f -> RelationService.TYPE.equals(f.getType()) && tb.equals(f.getRefBoardId())).map(BoardColumn::getId).toList();
+                if (!fIds.isEmpty())
+                    for (ItemValue v : itemDao.selectValuesByColumns(fIds))
+                        if (RelationService.getIds(v.getValue()).stream().anyMatch(picked::contains)) mapped.add(v.getItemId());
+                if (mapped.isEmpty()) continue;
+                if (current == null) {
+                    current = new HashMap<>();
+                    for (ItemValue v : itemDao.selectValuesByItem(i.getId())) current.put(v.getColumnId(), v.getValue());
+                }
+                String cur = out.containsKey(d.getId()) ? out.get(d.getId()) : current.getOrDefault(d.getId(), "");
+                List<String> toks = new ArrayList<>();
+                for (String p : cur.split(",")) if (!p.isBlank()) toks.add(p.trim());
+                boolean added = false;
+                for (Long m : mapped) if (!toks.contains(String.valueOf(m))) { toks.add(String.valueOf(m)); added = true; }
+                if (added) out.put(d.getId(), String.join(",", toks));
+            }
+        }
+        return out;
+    }
+
+    /** 연결 컬럼 고르기 창에서 '대상 워크스페이스에 추가': 대상 워크스페이스 첫 그룹에 새 항목을 만들고 고르기 후보로 돌려줌 */
+    public PickOption insertRelationTarget(Long columnId, String name, UserPrincipal me) {
+        BoardColumn c = partsDao.selectColumnById(columnId);
+        if (c == null) throw ApiException.notFound("컬럼");
+        // 연결 컬럼이면 연결 대상, 사람 컬럼이면 후보 워크스페이스(예: 고객사직원정보)에 추가
+        Long target = RelationService.TYPE.equals(c.getType()) ? c.getRefBoardId()
+                : "PEOPLE".equals(c.getType()) ? RelationService.getPeopleSource(boardDao.selectById(c.getBoard().getId()), c.getId()) : null;
+        if (target == null) throw ApiException.bad("항목을 추가할 워크스페이스가 정해지지 않은 컬럼입니다.");
+        String n = name == null ? "" : name.trim();
+        if (n.isEmpty() || n.length() > 300) throw ApiException.bad("이름은 1~300자여야 합니다.");
+        guard.getBoardChecked(target);
+        List<BoardGroup> gs = partsDao.selectGroupsByBoard(target);
+        if (gs.isEmpty()) throw ApiException.bad("대상 워크스페이스에 그룹이 없습니다.");
+        ItemDto created = insertItem(gs.get(0).getId(), new ItemCreateRequest(n, null), me);
+        return new PickOption(created.id(), n, gs.get(0).getName());
     }
 
     private String relNames(String v) {
@@ -390,6 +546,7 @@ public class ItemService {
                 try { new BigDecimal(v.replace(",", "")); } catch (NumberFormatException e) { throw ApiException.bad("'" + c.getName() + "' 은(는) 숫자여야 합니다."); }
                 return v.replace(",", "");
             }
+            case "PHONE" -> { return PhoneFormat.format(v); }
             case "DATE" -> {
                 try { return LocalDate.parse(v.length() > 10 ? v.substring(0, 10) : v).toString(); }
                 catch (Exception e) { throw ApiException.bad("'" + c.getName() + "' 은(는) 날짜(yyyy-MM-dd)여야 합니다."); }
@@ -403,7 +560,9 @@ public class ItemService {
     }
 
     public void deleteItem(Long id) {
-        boardService.deleteItems(List.of(getItem(id)));
+        Item i = getItem(id);
+        guard.setDeleteItemChecked(i);
+        boardService.deleteItems(List.of(i));
     }
 
     /** 드래그앤드롭 결과 반영: ids 순서대로 해당 그룹에 배치 */
@@ -450,9 +609,16 @@ public class ItemService {
         Item root = getItem(id);
         if (root.getParent() != null) throw ApiException.bad("하위 업무는 상위 업무와 함께 이동합니다. 상위 업무를 이동하세요.");
         if (req.boardId() == null) throw ApiException.bad("이동할 워크스페이스를 선택하세요.");
-        Board from = root.getBoard();
         Board to = guard.getBoardChecked(req.boardId());
-        if (from.getId().equals(to.getId())) throw ApiException.bad("같은 워크스페이스입니다.");
+        if (root.getBoard().getId().equals(to.getId())) throw ApiException.bad("같은 워크스페이스입니다.");
+        moveToBoard(root, to, req.groupId(), getUser(me.id()), "워크스페이스 이동");
+        return BoardService.toDto(root, 0, 0);
+    }
+
+    /** 업무(하위 업무 포함)를 다른 워크스페이스로 옮김. 상태·유형·컬럼 값은 이름이 같은 것끼리 이어 붙임. 권한 확인은 호출하는 쪽에서 */
+    private void moveToBoard(Item root, Board to, Long groupId, AppUser actor, String logTitle) {
+        Board from = root.getBoard();
+        MoveRequest req = new MoveRequest(to.getId(), groupId);
         List<BoardGroup> tgroups = partsDao.selectGroupsByBoard(to.getId());
         BoardGroup g = req.groupId() == null ? tgroups.stream().filter(x -> x.getName().equals(root.getGroup().getName())).findFirst().orElse(tgroups.isEmpty() ? null : tgroups.get(0))
                 : tgroups.stream().filter(x -> x.getId().equals(req.groupId())).findFirst().orElseThrow(() -> ApiException.bad("대상 워크스페이스의 그룹이 아닙니다."));
@@ -501,9 +667,84 @@ public class ItemService {
                 kept++;
             }
         }
-        insertSystemLog(root, getUser(me.id()), "워크스페이스 이동: " + from.getName() + " → " + to.getName()
+        insertSystemLog(root, actor, logTitle + ": " + from.getName() + " → " + to.getName()
                 + (dropped > 0 ? " (대상에 없는 컬럼 값 " + dropped + "개 제외)" : ""));
-        return BoardService.toDto(root, 0, 0);
+    }
+
+    // ---------- 여러 업무 일괄 처리 ----------
+    /** 선택한 업무 중 상위 업무도 함께 선택된 하위 업무는 상위와 같이 처리되므로 제외 */
+    private List<Item> getBulkRoots(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) throw ApiException.bad("업무를 선택하세요.");
+        if (ids.size() > 500) throw ApiException.bad("한 번에 500개까지 처리할 수 있습니다.");
+        List<Item> items = itemDao.selectByIds(new ArrayList<>(new LinkedHashSet<>(ids)));
+        Set<Long> sel = items.stream().map(Item::getId).collect(Collectors.toSet());
+        return items.stream().filter(i -> i.getParent() == null || !sel.contains(i.getParent().getId()))
+                .sorted(Comparator.comparingInt(Item::getSortOrder).thenComparing(Item::getId)).toList();
+    }
+
+    public BulkResult deleteItems(List<Long> ids) {
+        List<Item> roots = getBulkRoots(ids);
+        for (Item i : roots) guard.setDeleteItemChecked(i); // 하나라도 권한이 없으면 아무것도 지우지 않음
+        boardService.deleteItems(roots);
+        return new BulkResult(roots.size(), ids.size() - roots.size());
+    }
+
+    /** 다른 워크스페이스로 이동. 하위 업무만 선택한 경우는 상위 업무와 함께만 이동할 수 있어 건너뜀 */
+    public BulkResult updateItemsMove(List<Long> ids, Long boardId, Long groupId, UserPrincipal me) {
+        List<Item> roots = getBulkRoots(ids);
+        int done = 0;
+        for (Item it : roots) {
+            if (it.getParent() != null) continue;
+            updateItemMove(it.getId(), new MoveRequest(boardId, groupId), me);
+            done++;
+        }
+        return new BulkResult(done, ids.size() - done);
+    }
+
+    /** 같은 워크스페이스·같은 그룹 맨 아래에 사본 생성. 필드·컬럼 값·하위 업무를 복사하고 댓글·첨부·활동은 복사하지 않음 */
+    public BulkResult insertItemsCopy(List<Long> ids, UserPrincipal me) {
+        List<Item> roots = getBulkRoots(ids);
+        AppUser actor = getUser(me.id());
+        int done = 0;
+        for (Item src : roots) {
+            Item copy = copyItem(src, src.getParent(), src.getName() + " (복사)", actor);
+            if (src.getParent() == null)
+                for (Item kid : itemDao.selectByParent(src.getId())) copyItem(kid, copy, kid.getName(), actor);
+            String k = Dtos.keyOf(src);
+            insertSystemLog(copy, actor, "업무 복제: " + (k == null ? "#" + src.getId() : k) + " 에서 복사");
+            done++;
+        }
+        return new BulkResult(done, ids.size() - done);
+    }
+
+    private Item copyItem(Item src, Item parent, String name, AppUser actor) {
+        Item c = new Item();
+        c.setBoard(src.getBoard());
+        c.setGroup(parent != null ? parent.getGroup() : src.getGroup());
+        c.setParent(parent);
+        c.setName(name.length() > 300 ? name.substring(0, 300) : name);
+        c.setDescription(src.getDescription());
+        c.setStatus(src.getStatus());
+        c.setDuty(src.getDuty());
+        c.setAssignee(src.getAssignee());
+        c.setPriority(src.getPriority());
+        c.setStartDate(src.getStartDate());
+        c.setDueDate(src.getDueDate());
+        c.setType(src.getType());
+        c.setVersion(src.getVersion());
+        c.setEstimateHours(src.getEstimateHours());
+        c.setProgress(src.getProgress());
+        c.setCreatedBy(actor);
+        c.setSortOrder(parent != null ? src.getSortOrder() : itemDao.selectMaxSort(src.getGroup().getId()) + 1);
+        c.setKeyNum(boardService.getNextKey(src.getBoard()));
+        itemDao.insert(c);
+        List<ItemValue> vals = new ArrayList<>();
+        for (ItemValue v : itemDao.selectValuesByItem(src.getId())) {
+            ItemValue n = new ItemValue(); n.setItemId(c.getId()); n.setColumnId(v.getColumnId()); n.setValue(v.getValue()); vals.add(n);
+        }
+        if (!vals.isEmpty()) itemDao.batchInsertValues(vals);
+        maint.insertWatch(c.getId(), actor);
+        return c;
     }
 
     private static String key(String s) { return s == null ? "" : s.trim().toLowerCase(); }
@@ -660,7 +901,20 @@ public class ItemService {
         List<MyItemDto> openDtos = open.stream()
                 .sorted(Comparator.comparing(Item::getDueDate, Comparator.nullsLast(Comparator.naturalOrder())))
                 .map(MyItemDto::of).toList();
-        return new MyDashboard(open.size(), overdue.size(), dueSoon.size(), done, overdue, dueSoon, openDtos, boardService.getBoardList());
+        LocalDate monday = today.minusDays(today.getDayOfWeek().getValue() - 1L);
+        LocalDate lastMonday = monday.minusDays(7);
+        long[] byDay = new long[7];
+        long lastWeek = 0;
+        for (Item i : mine) {
+            if (i.getStatus() == null || !i.getStatus().isDone() || i.getResolvedAt() == null) continue;
+            LocalDate d = i.getResolvedAt().toLocalDate();
+            if (!d.isBefore(monday) && d.isBefore(monday.plusDays(7))) byDay[(int) (d.toEpochDay() - monday.toEpochDay())]++;
+            else if (!d.isBefore(lastMonday) && d.isBefore(monday)) lastWeek++;
+        }
+        List<Long> doneByDay = java.util.Arrays.stream(byDay).boxed().toList();
+        long thisWeek = doneByDay.stream().mapToLong(Long::longValue).sum();
+        return new MyDashboard(open.size(), overdue.size(), dueSoon.size(), done, overdue, dueSoon, openDtos, boardService.getBoardList(),
+                thisWeek, lastWeek, doneByDay);
     }
 
     // ---------- 내부 유틸 ----------

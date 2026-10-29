@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React from 'react'
 import { Avatar } from './common.jsx'
 import { StatusIcon } from './icons.jsx'
@@ -8,6 +9,7 @@ import { slaOf, fmtHours, fmtRemain } from '../sla.js'
 import { SlaBadge } from './cells.jsx'
 
 export default function BoardDashboard({ board, items, statusById, ops, dutyIndex }) {
+  const noun = itemNoun(board)
   const total = items.length
   const done = items.filter((i) => statusById[i.statusId]?.done).length
   const overdue = items.filter((i) => isOverdue(i, statusById[i.statusId]))
@@ -54,7 +56,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
   return (
     <div className="dash">
       <div className="kpi-row">
-        <KpiCard tone="primary" icon="list" label="전체 업무" value={total} />
+        <KpiCard tone="primary" icon="list" label={`전체 ${noun}`} value={total} />
         <KpiCard tone="success" icon="check" label="완료율" value={`${pct}%`} sub={`${done} / ${total} 완료`} />
         <KpiCard tone="info" icon="timeline" label="진행 중" value={total - done} />
         <KpiCard tone="danger" icon="calendar" label="마감 지남" value={overdue.length} sub={overdue.length ? '확인 필요' : '지연 없음'} />
@@ -70,7 +72,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
 
       <div className="dash-grid">
         <div className="panel">
-          <div className="panel-head"><h3>상태별 업무</h3></div>
+          <div className="panel-head"><h3>상태별 {noun}</h3></div>
           <div className="hbars">
             {board.statuses.map((s) => {
               const n = items.filter((i) => i.statusId === s.id).length
@@ -86,7 +88,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
         </div>
 
         <div className="panel">
-          <div className="panel-head"><h3>담당자별 업무량</h3></div>
+          <div className="panel-head"><h3>담당자별 {noun} 수</h3></div>
           <div className="legend">
             {board.statuses.map((s) => <span key={s.id}><i style={{ background: s.color }} />{s.label}</span>)}
           </div>
@@ -106,7 +108,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
                 <span className="hbar-value">{list.length}</span>
               </div>
             ))}
-            {people.length === 0 && <p className="muted small">업무가 없습니다.</p>}
+            {people.length === 0 && <p className="muted small">{noun}{josa(noun, '이/가')} 없습니다.</p>}
           </div>
         </div>
 
@@ -183,7 +185,7 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
 
         <div className="panel">
           <div className="panel-head"><h3>마감 임박 (7일 이내)</h3></div>
-          <ItemList list={dueSoon} statuses={board.statuses} statusById={statusById} ops={ops} empty="7일 이내 마감 업무가 없습니다." />
+          <ItemList list={dueSoon} statuses={board.statuses} statusById={statusById} ops={ops} empty={`7일 이내 마감 ${noun}${josa(noun, '이/가')} 없습니다.`} />
           {overdue.length > 0 && <>
             <div className="panel-head"><h3 className="text-danger">마감 지남</h3></div>
             <ItemList list={overdue} statuses={board.statuses} statusById={statusById} ops={ops} />

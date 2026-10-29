@@ -68,12 +68,16 @@ public class ExcelService {
     private final ItemService itemService;
     private final NotificationService notifier;
     private final DutyService dutyService;
+    private final RelationService relations;
 
     // =========================================================
     // 내보내기
     // =========================================================
     @Transactional(readOnly = true)
-    public byte[] getExport(Long boardId, boolean template) {
+    public byte[] getExport(Long boardId, boolean template) { return getExport(boardId, template, null); }
+
+    /** onlyIds: 지정하면 그 업무(와 그 하위 업무)만 내보냄 */
+    public byte[] getExport(Long boardId, boolean template, Set<Long> onlyIds) {
         Board board = boardService.getBoard(boardId);
         List<BoardGroup> gs = partsDao.selectGroupsByBoard(boardId);
         List<BoardStatus> ss = partsDao.selectStatusesByBoard(boardId);
@@ -93,8 +97,11 @@ public class ExcelService {
             }
             // 사용자 정의 컬럼 (내보내기 전용 — 가져오기에서는 읽지 않음). 같은 이름이면 업무/하위 업무 컬럼을 한 열로
             Map<String, List<Long>> extraCols = new LinkedHashMap<>();
-            for (BoardColumn bc : partsDao.selectColumnsByBoard(boardId))
+            List<BoardColumn> relCols = new ArrayList<>();
+            for (BoardColumn bc : partsDao.selectColumnsByBoard(boardId)) {
                 extraCols.computeIfAbsent(bc.getName(), k -> new ArrayList<>()).add(bc.getId());
+                if (RelationService.TYPE.equals(bc.getType())) relCols.add(bc);
+            }
             List<String> extraNames = new ArrayList<>(extraCols.keySet());
             int extraStart = HEADERS.length;
             boolean hasSub = !template && itemDao.selectByBoard(boardId).stream().anyMatch(x -> x.getParent() != null);
@@ -111,6 +118,25 @@ public class ExcelService {
             if (!template && !extraCols.isEmpty())
                 for (ItemValue v : itemDao.selectValuesByColumns(extraCols.values().stream().flatMap(List::stream).toList()))
                     vals.computeIfAbsent(v.getItemId(), k -> new HashMap<>()).put(v.getColumnId(), v.getValue());
+            // 연결 컬럼은 ID 대신 이름으로
+            if (!relCols.isEmpty() && !vals.isEmpty()) {
+                Map<Long, List<String>> colValues = new HashMap<>();
+                for (Map<Long, String> m : vals.values())
+                    for (BoardColumn rc : relCols) if (m.get(rc.getId()) != null) colValues.computeIfAbsent(rc.getId(), k -> new ArrayList<>()).add(m.get(rc.getId()));
+                Map<Long, Map<Long, String>> labels = relations.getLabels(relCols, colValues);
+                for (Map<Long, String> m : vals.values())
+                    for (BoardColumn rc : relCols) {
+                        String raw = m.get(rc.getId());
+                        if (raw == null) continue;
+                        Map<Long, String> lab = labels.getOrDefault(rc.getId(), Map.of());
+                        List<String> names = new ArrayList<>();
+                        for (String t : raw.split(",")) {
+                            t = t.trim();
+                            if (!t.isEmpty()) { try { names.add(lab.getOrDefault(Long.parseLong(t), "#" + t)); } catch (NumberFormatException e) { names.add(t); } }
+                        }
+                        m.put(rc.getId(), String.join(", ", names));
+                    }
+            }
             sheet.createFreezePane(0, 1);
 
             int r = 1;
@@ -118,13 +144,16 @@ public class ExcelService {
                 Map<Long, Integer> groupOrder = new HashMap<>();
                 for (int i = 0; i < gs.size(); i++) groupOrder.put(gs.get(i).getId(), i);
                 List<Item> list = new ArrayList<>(itemDao.selectByBoard(boardId));
+                if (onlyIds != null) list.removeIf(i -> !onlyIds.contains(i.getId()) && (i.getParent() == null || !onlyIds.contains(i.getParent().getId())));
                 list.sort(Comparator.comparing((Item i) -> groupOrder.getOrDefault(i.getGroup().getId(), 999))
                         .thenComparingInt(Item::getSortOrder).thenComparing(Item::getId));
                 // 하위 업무는 상위 업무 바로 아래
                 Map<Long, List<Item>> kids = new HashMap<>();
                 for (Item i : list) if (i.getParent() != null) kids.computeIfAbsent(i.getParent().getId(), k -> new ArrayList<>()).add(i);
                 List<Item> ordered = new ArrayList<>();
-                for (Item i : list) if (i.getParent() == null) { ordered.add(i); ordered.addAll(kids.getOrDefault(i.getId(), List.of())); }
+                Set<Long> present = new HashSet<>();
+                for (Item i : list) present.add(i.getId());
+                for (Item i : list) if (i.getParent() == null || !present.contains(i.getParent().getId())) { ordered.add(i); if (i.getParent() == null) ordered.addAll(kids.getOrDefault(i.getId(), List.of())); }
                 list = ordered;
                 for (Item i : list) {
                     Row row = sheet.createRow(r++);

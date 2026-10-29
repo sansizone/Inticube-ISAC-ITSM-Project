@@ -13,6 +13,8 @@ import java.util.List;
 public interface NotificationDao {
     Notification selectById(@Param("id") Long id);
     List<Notification> selectRecent(@Param("userId") Long userId);
+
+    List<Notification> selectRecentTalk(@Param("userId") Long userId);
     long selectUnreadCount(@Param("userId") Long userId);
     boolean selectExistsRecent(@Param("userId") Long userId, @Param("itemId") Long itemId, @Param("type") NotificationType type, @Param("after") LocalDateTime after);
     int insert(Notification n);

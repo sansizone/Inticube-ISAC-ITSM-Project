@@ -27,7 +27,7 @@ function parseHash() {
   const [path, query = ''] = raw.split('?')
   const parts = path.split('/').filter(Boolean)
   const params = Object.fromEntries(new URLSearchParams(query))
-  if (parts[0] === 'board' && parts[1]) return { page: 'board', boardId: Number(parts[1]), view: parts[2] || 'list', params }
+  if (parts[0] === 'board' && parts[1]) return { page: 'board', boardId: Number(parts[1]), view: parts[2] || null, params }
   if (parts[0] === 'posts') {
     if (parts[1] === 'new') return { page: 'post-edit', params }
     if (parts[1] && parts[2] === 'edit') return { page: 'post-edit', postId: Number(parts[1]), params }
@@ -174,10 +174,13 @@ function useDesktop() {
  * 페이지 헤더. 데스크톱에서는 상단바(#topbar-slot)에 브레드크럼·제목·액션을 한 줄로 넣고,
  * 모바일에서는 본문 위에 작은 헤더로 표시한다.
  */
-export function PageHeader({ title, icon = 'home', subtitle, actions, children, crumbs, compact }) {
+export function PageHeader({ title, icon = 'home', subtitle, actions, primary, children, crumbs, compact }) {
   const desktop = useDesktop()
   const [slot, setSlot] = useState(null)
-  useEffect(() => { setSlot(document.getElementById('topbar-slot')) }, [])
+  const [pslot, setPslot] = useState(null)   // 상단 바 검색 버튼 왼쪽 (주요 버튼 한 개, 모바일에서도 보임)
+  useEffect(() => { setSlot(document.getElementById('topbar-slot')); setPslot(document.getElementById('topbar-primary')) }, [])
+  const primaryEl = primary && pslot ? createPortal(primary, pslot) : null
+  if (primary && !pslot) actions = <>{actions}{primary}</>
   const crumbEls = crumbs && crumbs.length > 0 && (
     <span className="tb-crumbs">{crumbs.map((c, i) => <React.Fragment key={i}>{c.href ? <a href={c.href}>{c.label}</a> : <span>{c.label}</span>}<span className="tb-sep">/</span></React.Fragment>)}</span>
   )
@@ -191,6 +194,7 @@ export function PageHeader({ title, icon = 'home', subtitle, actions, children, 
         {children}
         <span className="grow" />
         {actions && <div className="tb-actions">{actions}</div>}
+        {primaryEl}
       </div>, slot)
   }
   return (
@@ -207,6 +211,7 @@ export function PageHeader({ title, icon = 'home', subtitle, actions, children, 
         </div>
         {actions && <div className="phs-actions">{actions}</div>}
       </div>
+      {primaryEl}
     </header>
   )
 }

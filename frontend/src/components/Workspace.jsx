@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useApp } from '../App.jsx'
@@ -85,6 +86,7 @@ export function MembersEditor({ board, onSaved }) {
 
 /** 업무를 다른 워크스페이스로 이동 */
 export function MoveItemModal({ item, board, onClose, onMoved }) {
+  const noun = itemNoun(board)
   const { boards } = useApp()
   const toast = useToast()
   const targets = boards.filter((b) => b.id !== board.id)
@@ -136,7 +138,7 @@ export function MoveItemModal({ item, board, onClose, onMoved }) {
           </select></label>
         {target && (
           <div className="move-summary">
-            <div><Icon name="check" size={13} /> 댓글·첨부파일·하위 업무는 함께 이동합니다.</div>
+            <div><Icon name="check" size={13} /> 댓글·첨부파일·하위 {noun}{josa(noun, '은/는')} 함께 이동합니다.</div>
             {st && <div className={stOk ? '' : 'warn'}><Icon name={stOk ? 'check' : 'x'} size={13} /> 상태 '{st.label}' {stOk ? '유지' : '— 대상에 없어 비워집니다'}</div>}
             {keep.length > 0 && <div><Icon name="check" size={13} /> 값 유지: {keep.join(', ')}</div>}
             {lose.length > 0 && <div className="warn"><Icon name="x" size={13} /> 대상에 같은 이름 컬럼이 없어 빠지는 값: {lose.join(', ')}</div>}

@@ -113,11 +113,24 @@ export function Avatar({ user, size: rawSize = 22 }) {
       <Icon name="user" size={Math.round(rawSize * 0.6)} strokeWidth={2} />
     </span>
   )
+  const ver = user.id in avatarOverride ? avatarOverride[user.id] : user.avatar
   return (
     <span className="avatar" title={user.name} style={{ width: size, height: size, background: avatarColor(user.id), fontSize: Math.max(9, size * 0.42) }}>
-      {initials(user.name)}
+      {ver ? <AvatarImg key={`${user.id}-${ver}`} src={avatarUrl(user.id, ver)} fallback={initials(user.name)} /> : initials(user.name)}
     </span>
   )
+}
+
+/** 프로필 사진 주소. v 는 버전(파일 수정 시각) — 바뀌면 새로 받음 */
+export const avatarUrl = (id, v) => `/api/users/${id}/avatar?v=${v}`
+/** 방금 바꾼 사진을 다른 화면 데이터가 새로 오기 전에도 반영 (null = 삭제됨) */
+const avatarOverride = {}
+export function setAvatarOverride(id, v) { avatarOverride[id] = v }
+
+function AvatarImg({ src, fallback }) {
+  const [bad, setBad] = useState(false)
+  if (bad) return fallback
+  return <img className="avatar-img" src={src} alt="" loading="lazy" draggable={false} onError={() => setBad(true)} />
 }
 
 // ---------- 선택 메뉴 ----------

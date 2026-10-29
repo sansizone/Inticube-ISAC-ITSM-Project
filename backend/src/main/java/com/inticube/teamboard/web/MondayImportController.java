@@ -29,7 +29,7 @@ public class MondayImportController {
                                             @AuthenticationPrincipal UserPrincipal me) {
         MondayImportService.Options opt;
         try {
-            opt = options == null || options.isBlank() ? new MondayImportService.Options(null, null, null, null, null)
+            opt = options == null || options.isBlank() ? new MondayImportService.Options(null, null, null, null, null, null, null, null, null, null, null)
                     : json.readValue(options, MondayImportService.Options.class);
         } catch (Exception e) {
             throw ApiException.bad("가져오기 설정을 읽을 수 없습니다.");

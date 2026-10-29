@@ -25,7 +25,7 @@ import static com.inticube.teamboard.dao.Rows.lng;
 @Transactional
 public class ColumnConvertService {
     /** 연결 컬럼으로 바꿀 수 있는 유형: 연결을 뺀 전부 (사람·숫자 등도 값이 대상 항목 이름과 같으면 연결, 아니면 보관) */
-    private static final Set<String> CONVERTIBLE = Set.of("TEXT", "LONG_TEXT", "DROPDOWN", "PEOPLE", "NUMBER", "DATE", "DATETIME", "LINK");
+    private static final Set<String> CONVERTIBLE = Set.of("TEXT", "LONG_TEXT", "DROPDOWN", "PEOPLE", "NUMBER", "DATE", "DATETIME", "LINK", "PHONE");
     private final BoardPartsDao partsDao;
     private final ItemDao itemDao;
     private final AppUserDao userDao;

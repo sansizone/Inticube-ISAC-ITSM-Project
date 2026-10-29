@@ -250,7 +250,7 @@ public class BoardService {
                     comments.getOrDefault(iid, 0L), files.getOrDefault(iid, 0L),
                     dateTime(r, "created_at"), dateTime(r, "updated_at"), vals.getOrDefault(iid, Map.of()),
                     integer(r, "key_num"), lng(r, "type_id"), lng(r, "version_id"), dec(r, "estimate_hours"), spent.get(iid), integer(r, "progress"),
-                    dateTime(r, "responded_at"), dateTime(r, "resolved_at"), str(r, "recur_rule")));
+                    dateTime(r, "responded_at"), dateTime(r, "resolved_at"), str(r, "recur_rule"), lng(r, "created_by")));
         }
         List<BoardColumn> relCols = cols.stream().filter(c -> RelationService.TYPE.equals(c.getType())).toList();
         Map<Long, List<String>> relVals = new HashMap<>();
@@ -270,8 +270,19 @@ public class BoardService {
                 partsDao.selectTypesByBoard(id).stream().map(TypeDto::of).toList(),
                 partsDao.selectVersionsByBoard(id).stream().map(VersionDto::of).toList(),
                 extraDao.selectLinksByBoard(id).stream().map(l -> new LinkEdge(l.getId(), l.getFromItemId(), l.getToItemId(), l.getType())).toList(),
-                relations.getBoardNames(relCols), relations.getLabels(relCols, relVals),
+                refBoardNames(b, cols, relCols), relations.getLabels(relCols, relVals),
                 itemDtos);
+    }
+
+    /** 연결 컬럼 대상 + 사람 컬럼 후보 워크스페이스(peopleSources) 의 ID → 이름 */
+    private Map<Long, String> refBoardNames(Board b, List<BoardColumn> cols, List<BoardColumn> relCols) {
+        Map<Long, String> out = new HashMap<>(relations.getBoardNames(relCols));
+        for (BoardColumn c : cols) {
+            if (!"PEOPLE".equals(c.getType())) continue;
+            Long src = RelationService.getPeopleSource(b, c.getId());
+            if (src != null && !out.containsKey(src)) { Board sb = boardDao.selectById(src); if (sb != null) out.put(src, sb.getName()); }
+        }
+        return out;
     }
 
     public static ItemDto toDto(Item i, long commentCount, long fileCount) {
@@ -289,7 +300,8 @@ public class BoardService {
                 UserSummary.of(i.getAssignee()), i.getPriority(), i.getStartDate(), i.getDueDate(),
                 i.getSortOrder(), commentCount, fileCount, i.getCreatedAt(), i.getUpdatedAt(), vals,
                 i.getKeyNum(), i.getType() == null ? null : i.getType().getId(), i.getVersion() == null ? null : i.getVersion().getId(),
-                i.getEstimateHours(), spent, i.getProgress(), i.getRespondedAt(), i.getResolvedAt(), i.getRecurRule());
+                i.getEstimateHours(), spent, i.getProgress(), i.getRespondedAt(), i.getResolvedAt(), i.getRecurRule(),
+                i.getCreatedBy() == null ? null : i.getCreatedBy().getId());
     }
 
     static Map<Long, Long> toCountMap(List<Map<String, Object>> rows, String key, String val) {
@@ -503,6 +515,47 @@ public class BoardService {
         boardDao.update(b);
     }
 
+    /**
+     * 자동화 규칙 저장 (column_config.automations). 상태·그룹은 이 워크스페이스 것, 대상 워크스페이스는 저장하는 사람이 볼 수 있는 곳만.
+     * 같은 상태에 규칙은 하나만 둔다.
+     */
+    public void setAutomations(Long boardId, List<AutomationRule> rules, UserPrincipal me) {
+        Board b = getBoard(boardId);
+        checkOwner(b, me);
+        List<AutomationRule> in = rules == null ? List.of() : rules;
+        if (in.size() > 30) throw ApiException.bad("자동화 규칙은 30개까지 만들 수 있습니다.");
+        var arr = json.createArrayNode();
+        Set<Long> seen = new HashSet<>();
+        for (AutomationRule r : in) {
+            BoardStatus st = r.statusId() == null ? null : partsDao.selectStatusById(r.statusId());
+            if (st == null || !st.getBoard().getId().equals(boardId)) throw ApiException.bad("조건 상태를 선택하세요.");
+            if (!seen.add(st.getId())) throw ApiException.bad("'" + st.getLabel() + "' 상태에 규칙이 이미 있습니다.");
+            var n = arr.addObject();
+            n.put("statusId", st.getId());
+            if ("group".equals(r.action())) {
+                BoardGroup g = r.groupId() == null ? null : partsDao.selectGroupById(r.groupId());
+                if (g == null || !g.getBoard().getId().equals(boardId)) throw ApiException.bad("이동할 그룹을 선택하세요.");
+                n.put("action", "group"); n.put("groupId", g.getId());
+            } else if ("board".equals(r.action())) {
+                if (r.boardId() == null || r.boardId().equals(boardId)) throw ApiException.bad("이동할 워크스페이스를 선택하세요.");
+                Board to = guard.getBoardChecked(r.boardId());
+                n.put("action", "board"); n.put("boardId", to.getId());
+                if (r.groupId() != null) {
+                    BoardGroup g = partsDao.selectGroupById(r.groupId());
+                    if (g == null || !g.getBoard().getId().equals(to.getId())) throw ApiException.bad("대상 워크스페이스의 그룹이 아닙니다.");
+                    n.put("groupId", g.getId());
+                }
+            } else throw ApiException.bad("실행할 동작을 선택하세요.");
+        }
+        try {
+            var root = b.getColumnConfig() == null || b.getColumnConfig().isBlank() ? json.createObjectNode()
+                    : (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(b.getColumnConfig());
+            if (arr.isEmpty()) root.remove("automations"); else root.set("automations", arr);
+            b.setColumnConfig(root.isEmpty() ? null : json.writeValueAsString(root));
+        } catch (Exception e) { throw ApiException.bad("워크스페이스 설정을 읽을 수 없습니다."); }
+        boardDao.update(b);
+    }
+
     private String validJson(String s) {
         if (s.isBlank()) return null;
         try { json.readTree(s); return s; } catch (Exception e) { throw ApiException.bad("설정 형식이 올바르지 않습니다."); }
@@ -646,10 +699,18 @@ public class BoardService {
         if (c == null) throw ApiException.notFound("컬럼");
         checkOwner(c.getBoard(), me);
         Long beforeRef = c.getRefBoardId();
+        String beforeType = c.getType();
         applyColumn(c, req);
         checkRelation(c);
         if (beforeRef != null && !beforeRef.equals(c.getRefBoardId())) itemDao.deleteValuesByColumn(c.getId());
         partsDao.updateColumn(c);
+        // 전화번호로 바꾸면 기존 값(엑셀에서 숫자로 들어와 0 이 빠진 번호 등)을 번호 형식으로 정리
+        if ("PHONE".equals(c.getType()) && !"PHONE".equals(beforeType)) {
+            for (ItemValue v : itemDao.selectValuesByColumns(List.of(c.getId()))) {
+                String f = PhoneFormat.format(v.getValue());
+                if (!f.equals(v.getValue())) { v.setValue(f); itemDao.updateValue(v); }
+            }
+        }
         return ColumnDto.of(c);
     }
 

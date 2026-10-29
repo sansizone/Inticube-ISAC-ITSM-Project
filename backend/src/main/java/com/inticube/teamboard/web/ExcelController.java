@@ -27,11 +27,12 @@ public class ExcelController {
 
     /** template=true: 빈 양식, false: 현재 업무 포함 */
     @GetMapping
-    public ResponseEntity<byte[]> export(@PathVariable Long boardId, @RequestParam(defaultValue = "false") boolean template) {
+    public ResponseEntity<byte[]> export(@PathVariable Long boardId, @RequestParam(defaultValue = "false") boolean template,
+                                         @RequestParam(required = false) java.util.List<Long> ids) {
         guard.getBoardChecked(boardId);
-        byte[] body = excelService.getExport(boardId, template);
+        byte[] body = excelService.getExport(boardId, template, ids == null || ids.isEmpty() ? null : new java.util.HashSet<>(ids));
         String boardName = boardService.getBoard(boardId).getName().replaceAll("[\\\\/:*?\"<>|\\r\\n]", "_");
-        String name = boardName + (template ? "_업무양식.xlsx" : "_업무_" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + ".xlsx");
+        String name = boardName + (template ? "_업무양식.xlsx" : (ids != null && !ids.isEmpty() ? "_선택업무_" : "_업무_") + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + ".xlsx");
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(name, StandardCharsets.UTF_8).build().toString())
                 .header("X-Content-Type-Options", "nosniff")

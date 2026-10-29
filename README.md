@@ -368,7 +368,7 @@ PostgreSQL 16에서 로그인·권한·CSRF·보드/업무 CRUD·드래그 이�
 
 ## GitLab CI/CD 배포 (10.1.17.116)
 
-`.gitlab-ci.yml` 이 **build → deploy** 두 단계로 돌아갑니다. `dev` 브랜치에 머지(푸시)되면 자동 빌드·배포되고, 그 외 브랜치는 빌드만 한 뒤 파이프라인 화면의 ▶ 버튼으로 수동 배포할 수 있습니다. 배포는 jar 와 스크립트·SQL 만 올리고, 서버의 `config/application.yml`·`data/`·`logs/` 는 건드리지 않습니다.
+`.gitlab-ci.yml` 이 **build → deploy** 두 단계로 돌아갑니다. `dev` 브랜치에 머지(푸시)되면 자동 빌드·배포되고, 그 외 브랜치(pilot 등) 푸시나 MR 생성 시에는 파이프라인이 돌지 않습니다. 배포는 jar 와 스크립트·SQL 만 올리고, 서버의 `config/application.yml`·`data/`·`logs/` 는 건드리지 않습니다.
 
 **1. Runner (shell executor) 준비** — Runner 머신에 JDK 17, Node 20, Maven, git, ssh/scp 가 있어야 합니다. 프로젝트 › Settings › CI/CD › Runners 에서 등록하고 `Run untagged jobs` 를 켜거나 job 에 tags 를 맞추세요.
 

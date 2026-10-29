@@ -3,7 +3,7 @@ import { useApp, navigate } from '../App.jsx'
 import { Avatar, Popover, usePopover, UserPicker, StatusPicker, DutyPicker } from './common.jsx'
 import { BoardMark } from './Sidebar.jsx'
 import { Icon, StatusIcon } from './icons.jsx'
-import { columnsFor, distinctValues, splitPeople, TYPE_LABEL, COLUMN_TYPES, relIds, refLabel, builtinLabel } from './Fields.jsx'
+import { columnsFor, distinctValues, splitPeople, TYPE_LABEL, COLUMN_TYPES, relIds, relTokens, refLabel, builtinLabel, itemNoun } from './Fields.jsx'
 import { api } from '../api.js'
 import { RelationTarget } from './BoardSettings.jsx'
 import { slaOf, itemKey, blockedBy } from '../sla.js'
@@ -69,11 +69,11 @@ export function applyFilters(board, f, sort, { me, statusById, dutyIndex, watchi
     }
     if (q && !i.name.toLowerCase().includes(q) && String(i.id) !== q.replace(/^#/, '') && itemKey(board, i).toLowerCase() !== q
       && !Object.entries(i.values || {}).some(([cid, v]) => v && (colById[cid]?.type === 'RELATION'
-        ? relIds(v).some((id) => refLabel(cid, id).toLowerCase().includes(q)) : v.toLowerCase().includes(q)))) return false
+        ? relTokens(v).some((id) => refLabel(cid, id).toLowerCase().includes(q)) : v.toLowerCase().includes(q)))) return false
     for (const [cid, vs] of fieldFilters) {
       const v = i.values?.[cid] || ''
       const col = colById[cid]
-      const have = col?.type === 'PEOPLE' ? splitPeople(v) : col?.type === 'RELATION' ? relIds(v).map(String) : [v]
+      const have = col?.type === 'PEOPLE' ? splitPeople(v) : col?.type === 'RELATION' ? relTokens(v) : [v]
       if (!vs.some((x) => (x === '' ? v === '' : have.includes(x)))) return false
     }
     if (f.assignee === 'me' && i.assignee?.id !== me.id) return false
@@ -129,7 +129,7 @@ function colValue(col) {
     const v = i.values?.[col.id]
     if (v == null || v === '') return null
     if (col.type === 'NUMBER') { const n = Number(v); return Number.isNaN(n) ? v : n }
-    if (col.type === 'RELATION') return relIds(v).map((id) => refLabel(col.id, id)).join(', ').toLowerCase()
+    if (col.type === 'RELATION') return relTokens(v).map((id) => refLabel(col.id, id)).join(', ').toLowerCase()
     return v.toLowerCase()
   }
 }
@@ -198,18 +198,19 @@ export function FieldFilter({ board, value, onChange }) {
 }
 
 /** 아이콘만 있다가 누르면 펼쳐지는 검색창 */
-export function SearchToggle({ value, onChange }) {
+export function SearchToggle({ value, onChange, board }) {
+  const noun = board ? itemNoun(board) : '업무', nameLabel = board ? builtinLabel(board, 'name') : '업무명'
   const [open, setOpen] = useState(!!value)
   const ref = useRef(null)
   useEffect(() => { if (open) ref.current?.focus() }, [open])
   useEffect(() => { if (value) setOpen(true) }, [value])
   if (!open) {
-    return <button className="chip-btn icon-only" onClick={() => setOpen(true)} title="업무 검색" aria-label="업무 검색"><Icon name="search" size={14} /></button>
+    return <button className="chip-btn icon-only" onClick={() => setOpen(true)} title={`${noun} 검색`} aria-label={`${noun} 검색`}><Icon name="search" size={14} /></button>
   }
   return (
     <div className="filter-search">
       <Icon name="search" size={13} />
-      <input ref={ref} placeholder="업무명, 키(REQ-12) 또는 #번호" value={value} onChange={(e) => onChange(e.target.value)} aria-label="업무 검색"
+      <input ref={ref} placeholder={`${nameLabel}, 키(${board?.keyPrefix || 'REQ'}-12) 또는 #번호`} value={value} onChange={(e) => onChange(e.target.value)} aria-label={`${noun} 검색`}
         onBlur={() => { if (!value) setOpen(false) }}
         onKeyDown={(e) => { if (e.key === 'Escape') { onChange(''); setOpen(false) } }} />
       {value && <button className="icon-btn icon-btn-xs" onMouseDown={(e) => e.preventDefault()} onClick={() => { onChange(''); ref.current?.focus() }} aria-label="지우기"><Icon name="x" size={12} /></button>}
@@ -353,9 +354,9 @@ export function StatusFilter({ value, onChange, statuses }) {
   )
 }
 
-export function PersonFilter({ value, onChange, users, me }) {
+export function PersonFilter({ value, onChange, users, me, noun = '업무' }) {
   const pop = usePopover()
-  const label = value === 'me' ? '내 업무' : value === 'none' ? '담당자 없음' : value ? users.find((u) => u.id === Number(value))?.name : '모든 담당자'
+  const label = value === 'me' ? `내 ${noun}` : value === 'none' ? '담당자 없음' : value ? users.find((u) => u.id === Number(value))?.name : '모든 담당자'
   return (
     <>
       <button className={`chip-btn ${value ? 'on' : ''}`} onClick={pop.open}>
@@ -365,7 +366,7 @@ export function PersonFilter({ value, onChange, users, me }) {
         <Popover anchor={pop.anchor} onClose={pop.close} width={240}>
           <div className="menu" style={{ paddingBottom: 0 }}>
             <button className="menu-row" onClick={() => { onChange(''); pop.close() }}>모든 담당자</button>
-            <button className="menu-row" onClick={() => { onChange('me'); pop.close() }}><Avatar user={me} size={18} /> 내 업무만</button>
+            <button className="menu-row" onClick={() => { onChange('me'); pop.close() }}><Avatar user={me} size={18} /> 내 {noun}만</button>
           </div>
           <div className="menu-sep" />
           <UserPicker users={users} value={value && !['me', 'none'].includes(value) ? Number(value) : undefined}
@@ -473,22 +474,32 @@ const HEADER_FILTER = { status: 'status', assignee: 'assignee', due: 'due', prio
  * 표 컬럼 헤더 메뉴: 오름/내림차순 정렬, 컬럼 필터, 컬럼 숨기기.
  * colKey: 'name' | 'key' | 기본 컬럼 키 | 'c:<id>'
  */
-export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, onFilter, onHide, onSettings, onAddRight, users, me, statusById }) {
+export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, onFilter, onHide, onSettings, onAddRight, onRename, users, me, statusById }) {
   const pop = usePopover()
+  const [newName, setNewName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [renameErr, setRenameErr] = useState(null)
   const [mode, setMode] = useState('menu') // menu | filter
   const [q, setQ] = useState('')
   const sortKey = colKey.startsWith('c:') ? (col?.type === 'LONG_TEXT' ? null : colKey) : HEADER_SORT[colKey] || null
   const filterKey = colKey.startsWith('c:') ? (col?.type === 'LONG_TEXT' ? null : 'fields') : HEADER_FILTER[colKey] || null
   const sorted = sortKey && sort.key === sortKey
   const filtered = filterKey === 'fields' ? !!filters.fields?.[col.id]?.length : filterKey ? hasValue(filters, filterKey) : false
-  const open = (e) => { setMode('menu'); setQ(''); pop.open(e) }
+  const open = (e) => { setMode('menu'); setQ(''); setRenameErr(null); pop.open(e) }
+  const submitRename = async (e) => {
+    e.preventDefault()
+    const v = newName.trim()
+    if (!v || v === label) { pop.close(); return }
+    setSaving(true); setRenameErr(null)
+    try { await onRename(v); pop.close() } catch (err) { setRenameErr(err.message) } finally { setSaving(false) }
+  }
   const pick = (patch) => { onFilter(patch); pop.close() }
 
   // 컬럼별 거르기 옵션
   const options = () => {
     switch (filterKey) {
       case 'status': return [['open', '완료 제외'], ...board.statuses.map((s) => [String(s.id), s.label]), ['none', '상태 없음']]
-      case 'assignee': return [['me', '내 업무'], ...users.map((u) => [String(u.id), u.name]), ['none', '담당자 없음']]
+      case 'assignee': return [['me', `내 ${itemNoun(board)}`], ...users.map((u) => [String(u.id), u.name]), ['none', '담당자 없음']]
       case 'type': return [...(board.types || []).map((t) => [String(t.id), t.name]), ['none', '유형 없음']]
       case 'version': return [...(board.versions || []).map((v) => [String(v.id), v.name]), ['none', '버전 없음']]
       case 'priority': return PRIORITIES
@@ -524,11 +535,25 @@ export function HeaderMenu({ colKey, label, col, board, sort, onSort, filters, o
                 <button className="menu-row" onClick={() => setMode('filter')}><Icon name="filter" size={14} /> <span className="grow">컬럼 필터</span><Icon name="chevronRight" size={13} /></button>
                 {filtered && <button className="menu-row" onClick={() => { if (filterKey === 'fields') setField([]); else onFilter(clearOne(filters, filterKey)); pop.close() }}><Icon name="x" size={14} /> 컬럼 필터 해제</button>}
               </>}
-              {(onHide || onSettings || onAddRight) && <div className="menu-sep" />}
+              {(onHide || onSettings || onAddRight || onRename) && <div className="menu-sep" />}
+              {onRename && <button className="menu-row" onClick={() => { setNewName(label); setMode('rename') }}><Icon name="edit" size={14} /> 컬럼 이름 변경</button>}
               {onAddRight && <button className="menu-row" onClick={() => setMode('add')}><Icon name="plus" size={14} /> <span className="grow">오른쪽에 컬럼 추가</span><Icon name="chevronRight" size={13} /></button>}
               {onHide && <button className="menu-row" onClick={() => { onHide(); pop.close() }}><Icon name="eyeOff" size={14} /> 이 보기에서 컬럼 숨기기</button>}
               {onSettings && <button className="menu-row" onClick={() => { onSettings(); pop.close() }}><Icon name="settings" size={14} /> 컬럼 설정 (이름·유형·삭제)…</button>}
             </div>
+          ) : mode === 'rename' ? (
+            <form className="menu" onSubmit={submitRename}>
+              <button type="button" className="menu-row" onClick={() => setMode('menu')}><Icon name="chevronLeft" size={14} /> <b className="grow">컬럼 이름 변경</b></button>
+              <div style={{ padding: '4px 6px 6px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <input className="input" autoFocus maxLength={60} value={newName} onChange={(e) => setNewName(e.target.value)}
+                  onFocus={(e) => e.target.select()} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setMode('menu') } }} />
+                {renameErr && <div className="form-error">{renameErr}</div>}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                  <button type="button" className="btn btn-sm" onClick={() => setMode('menu')}>취소</button>
+                  <button type="submit" className="btn btn-sm btn-primary" disabled={saving || !newName.trim()}>{saving ? '저장 중…' : '저장'}</button>
+                </div>
+              </div>
+            </form>
           ) : mode === 'add' ? (
             <div className="menu">
               <button className="menu-row" onClick={() => setMode('menu')}><Icon name="chevronLeft" size={14} /> <b className="grow ellipsis">'{label}' 오른쪽에 컬럼 추가</b></button>

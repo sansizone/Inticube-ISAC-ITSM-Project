@@ -1,3 +1,4 @@
+import { addPlaceholder, itemNoun } from './Fields.jsx'
 import React, { useState } from 'react'
 import { Avatar } from './common.jsx'
 import { Icon, StatusIcon, PriorityIcon } from './icons.jsx'
@@ -6,6 +7,7 @@ import { friendlyDate, isOverdue } from '../util.js'
 const PAGE = 50
 
 export default function KanbanView({ board, items, statusById, ops, dutyIndex }) {
+  const noun = itemNoun(board)
   const [drag, setDrag] = useState(null)
   const [over, setOver] = useState(null)
   const [adding, setAdding] = useState(null)
@@ -39,11 +41,11 @@ export default function KanbanView({ board, items, statusById, ops, dutyIndex })
               <span className="kcol-title">{status ? status.label : '상태 없음'}</span>
               <span className="kcol-count">{colItems.length}</span>
               <span className="grow" />
-              <button className="icon-btn icon-btn-sm" aria-label="업무 추가" onClick={() => { setAdding(key); setText('') }}><Icon name="plus" size={14} /></button>
+              <button className="icon-btn icon-btn-sm" aria-label={`${noun} 추가`} onClick={() => { setAdding(key); setText('') }}><Icon name="plus" size={14} /></button>
             </div>
             <div className="kcards">
               {adding === key && (
-                <textarea className="input kadd" autoFocus rows={2} placeholder="업무 이름 입력 후 Enter" value={text} maxLength={300}
+                <textarea className="input kadd" autoFocus rows={2} placeholder={addPlaceholder(board)} value={text} maxLength={300}
                   onChange={(e) => setText(e.target.value)} onBlur={() => submit(status?.id)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(status?.id) } if (e.key === 'Escape') { setText(''); setAdding(null) } }} />
               )}

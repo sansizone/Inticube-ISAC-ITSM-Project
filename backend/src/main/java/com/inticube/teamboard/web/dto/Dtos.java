@@ -14,7 +14,11 @@ public final class Dtos {
     private Dtos() {}
 
     // ---------- 사용자 ----------
-    public record UserSummary(Long id, String username, String name, String department) {
+    /** avatar: 프로필 사진 버전(없으면 null) — /api/users/{id}/avatar?v=버전 */
+    public record UserSummary(Long id, String username, String name, String department, Long avatar) {
+        public UserSummary(Long id, String username, String name, String department) {
+            this(id, username, name, department, com.inticube.teamboard.service.AvatarService.version(id));
+        }
         public static UserSummary of(AppUser u) {
             return u == null ? null : new UserSummary(u.getId(), u.getUsername(), u.getName(), u.getDepartment());
         }
@@ -22,18 +26,20 @@ public final class Dtos {
 
     /** mfaEnabled: OTP 설정됨, mfaSetupRequired: 정책상 OTP 를 설정해야 계속 쓸 수 있음 */
     public record MeDto(Long id, String username, String name, String department, Role role, boolean mustChangePassword,
-                        boolean mfaEnabled, boolean mfaSetupRequired) {
+                        boolean mfaEnabled, boolean mfaSetupRequired, Long avatar) {
         public static MeDto of(AppUser u) { return of(u, false); }
         public static MeDto of(AppUser u, boolean setupRequired) {
-            return new MeDto(u.getId(), u.getUsername(), u.getName(), u.getDepartment(), u.getRole(), u.isMustChangePassword(), u.isTotpEnabled(), setupRequired);
+            return new MeDto(u.getId(), u.getUsername(), u.getName(), u.getDepartment(), u.getRole(), u.isMustChangePassword(), u.isTotpEnabled(), setupRequired,
+                    com.inticube.teamboard.service.AvatarService.version(u.getId()));
         }
     }
 
     public record UserAdminDto(Long id, String username, String name, String department, Role role,
-                               boolean active, boolean mustChangePassword, LocalDateTime createdAt, boolean mfaEnabled) {
+                               boolean active, boolean mustChangePassword, LocalDateTime createdAt, boolean mfaEnabled, Long avatar) {
         public static UserAdminDto of(AppUser u) {
             return new UserAdminDto(u.getId(), u.getUsername(), u.getName(), u.getDepartment(), u.getRole(),
-                    u.isActive(), u.isMustChangePassword(), u.getCreatedAt(), u.isTotpEnabled());
+                    u.isActive(), u.isMustChangePassword(), u.getCreatedAt(), u.isTotpEnabled(),
+                    com.inticube.teamboard.service.AvatarService.version(u.getId()));
         }
     }
 
@@ -75,7 +81,8 @@ public final class Dtos {
                           long commentCount, long fileCount, LocalDateTime createdAt, LocalDateTime updatedAt,
                           Map<Long, String> values,
                           Integer keyNum, Long typeId, Long versionId, java.math.BigDecimal estimateHours, java.math.BigDecimal spentHours,
-                          Integer progress, LocalDateTime respondedAt, LocalDateTime resolvedAt, String recurRule) {}
+                          Integer progress, LocalDateTime respondedAt, LocalDateTime resolvedAt, String recurRule,
+                          Long createdById) {}
 
     // ---------- v3.0 유지보수 ----------
     public record TypeDto(Long id, String name, String color, String icon, Integer responseHours, Integer resolveHours, int sortOrder, boolean isDefault) {
@@ -144,6 +151,10 @@ public final class Dtos {
     public record ViewRequest(@Size(max = 50) String name, String type, @Size(max = 20000) String config) {}
     public record ColumnConfigRequest(@Size(max = 20000) String config) {}
     public record MoveRequest(Long boardId, Long groupId) {}
+    /** 여러 업무 한꺼번에: 이동(boardId·groupId)·복제·삭제·내보내기 */
+    public record BulkRequest(java.util.List<Long> ids, Long boardId, Long groupId) {}
+    /** done: 처리한 업무 수, skipped: 건너뛴 수(상위와 함께 처리된 하위 업무 등) */
+    public record BulkResult(int done, int skipped) {}
     public record PickOption(Long id, String label, String sub) {}
     /** 이 업무를 연결 컬럼으로 참조하는 다른 업무 */
     public record Backlink(Long columnId, String columnName, Long boardId, String boardName, List<PickOption> items) {}
@@ -171,6 +182,11 @@ public final class Dtos {
     public record GroupRequest(@NotBlank @Size(max = 100) String name, @Size(max = 20) String color) {}
     public record ItemCreateRequest(@NotBlank @Size(max = 300) String name, Long parentId) {}
     public record ReorderRequest(List<Long> ids) {}
+    /** 양식 보기 접수: values 키는 "description" 또는 컬럼 ID */
+    public record FormSubmitRequest(@Size(max = 300) String name, Map<String, Object> values) {}
+    /** 자동화 규칙 저장 */
+    public record AutomationRule(Long statusId, String action, Long groupId, Long boardId) {}
+    public record AutomationRequest(List<AutomationRule> rules) {}
 
     // ---------- 아이템 상세 ----------
     /** authorName: 외부에서 가져온 댓글의 원래 작성자 이름 (없으면 null) */
@@ -225,7 +241,9 @@ public final class Dtos {
 
     public record MyDashboard(long openCount, long overdueCount, long dueThisWeekCount, long doneCount,
                               List<MyItemDto> overdue, List<MyItemDto> dueSoon, List<MyItemDto> open,
-                              List<BoardSummary> boards) {}
+                              List<BoardSummary> boards,
+                              /** 이번 주(월~일) 완료 건수, 지난주 완료 건수, 이번 주 요일별(월~일) 완료 건수 */
+                              long doneThisWeek, long doneLastWeek, List<Long> doneByDay) {}
 
     // ---------- 게시판 ----------
     public record CategoryDto(Long id, String name, String description, int sortOrder, boolean adminOnlyWrite, long postCount) {}

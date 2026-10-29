@@ -59,6 +59,12 @@ public class NotificationService {
                 notiDao.selectRecent(userId).stream().map(NotificationDto::of).toList());
     }
 
+    /** 홈 '댓글 · 멘션' 카드: 내 업무·글에 달린 댓글과 나를 언급한 알림 */
+    @Transactional(readOnly = true)
+    public java.util.List<NotificationDto> getTalkList(Long userId) {
+        return notiDao.selectRecentTalk(userId).stream().map(NotificationDto::of).toList();
+    }
+
     public void updateRead(Long id, Long userId) {
         Notification n = notiDao.selectById(id);
         if (n == null) throw ApiException.notFound("알림");

@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React, { useState } from 'react'
 import { api } from '../api.js'
 import { navigate } from '../App.jsx'
@@ -13,6 +14,7 @@ export const VIEW_TYPES = [
   { type: 'roadmap', label: '로드맵', icon: 'map' },
   { type: 'dashboard', label: '인사이트', icon: 'chart' },
   { type: 'wiki', label: '위키', icon: 'book' },
+  { type: 'form', label: '양식', icon: 'edit' },
 ]
 export const VIEW_META = Object.fromEntries(VIEW_TYPES.map((v) => [v.type, v]))
 
@@ -29,6 +31,7 @@ export function parseViewConfig(v, emptyFilters) {
 
 /** 보기 탭 막대: 탭 이동, 이름 변경·복제·순서·삭제, 새 보기 추가 */
 export function ViewTabs({ board, active, setBoard, currentConfig }) {
+  const noun = itemNoun(board)
   const toast = useToast()
   const [confirm, confirmDialog] = useConfirm()
   const [renaming, setRenaming] = useState(null)
@@ -61,7 +64,7 @@ export function ViewTabs({ board, active, setBoard, currentConfig }) {
     try { await api.post(`/api/boards/${board.id}/views/reorder`, { ids: list.map((x) => x.id) }) } catch (e) { toast(e.message, 'error') }
   }
   const remove = async (v) => {
-    if (!(await confirm(`'${v.name}' 보기를 삭제할까요?\n업무 데이터는 그대로 남습니다.`, { okText: '삭제' }))) return
+    if (!(await confirm(`'${v.name}' 보기를 삭제할까요?\n${noun} 데이터는 그대로 남습니다.`, { okText: '삭제' }))) return
     try {
       await api.del(`/api/views/${v.id}`)
       const rest = views.filter((x) => x.id !== v.id)

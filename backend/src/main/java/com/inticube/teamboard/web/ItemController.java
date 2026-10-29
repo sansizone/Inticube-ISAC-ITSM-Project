@@ -35,6 +35,27 @@ public class ItemController {
         return itemService.updateItem(id, body, me);
     }
 
+    // ---------- 여러 업무 일괄 처리 (선택한 모든 업무에 권한이 있어야 함) ----------
+    private void checkAll(BulkRequest req) {
+        if (req.ids() == null || req.ids().isEmpty()) throw ApiException.bad("업무를 선택하세요.");
+        req.ids().forEach(guard::getItemChecked);
+    }
+
+    @PostMapping("/items/bulk-delete")
+    public BulkResult bulkDelete(@RequestBody BulkRequest req) { checkAll(req); return itemService.deleteItems(req.ids()); }
+
+    @PostMapping("/items/bulk-move")
+    public BulkResult bulkMove(@RequestBody BulkRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        checkAll(req);
+        return itemService.updateItemsMove(req.ids(), req.boardId(), req.groupId(), me);
+    }
+
+    @PostMapping("/items/bulk-copy")
+    public BulkResult bulkCopy(@RequestBody BulkRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        checkAll(req);
+        return itemService.insertItemsCopy(req.ids(), me);
+    }
+
     @DeleteMapping("/items/{id}")
     public void delete(@PathVariable Long id) { guard.getItemChecked(id); itemService.deleteItem(id); }
 
@@ -78,6 +99,17 @@ public class ItemController {
     // ---------- 알림 ----------
     @GetMapping("/notifications")
     public NotificationList notifications(@AuthenticationPrincipal UserPrincipal me) { return notificationService.getList(me.id()); }
+
+    /** 양식 보기로 접수 */
+    @PostMapping("/views/{id}/submit")
+    public ItemDto submitForm(@PathVariable Long id, @Valid @RequestBody FormSubmitRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        return itemService.insertFormItem(id, req, me);
+    }
+
+    @GetMapping("/notifications/talk")
+    public java.util.List<com.inticube.teamboard.web.dto.Dtos.NotificationDto> notificationTalk(@AuthenticationPrincipal UserPrincipal me) {
+        return notificationService.getTalkList(me.id());
+    }
 
     @PostMapping("/notifications/{id}/read")
     public void read(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) { notificationService.updateRead(id, me.id()); }

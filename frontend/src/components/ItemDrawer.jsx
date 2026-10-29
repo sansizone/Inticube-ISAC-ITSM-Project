@@ -1,3 +1,4 @@
+import { itemNoun, josa, itemTitle } from './Fields.jsx'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../api.js'
@@ -13,6 +14,7 @@ import { FieldEditor, columnsFor, distinctValues, nameUser, rememberRefs, builti
 
 /** 업무 상세 패널 (오른쪽 슬라이드) */
 export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) {
+  const noun = itemNoun(board)
   const { me, users, mentionNames } = useApp()
   const toast = useToast()
   const [confirm, confirmDialog] = useConfirm()
@@ -108,7 +110,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
 
   return createPortal(
     <div className="drawer-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <aside className="drawer" role="dialog" aria-label="업무 상세">
+      <aside className="drawer" role="dialog" aria-label={`${noun} 상세`}>
         {error ? <div className="drawer-scroll"><div className="form-error">{error}</div><button className="btn" onClick={onClose}>닫기</button></div>
           : !item ? <div className="center-screen"><Spinner /></div> : (
             <>
@@ -119,18 +121,18 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                 <span className="crumb-sep">/</span><span className="crumb crumb-current" title={`#${item.id} · 키를 눌러 복사`} role="button" tabIndex={0}
                   onClick={() => navigator.clipboard?.writeText(itemKey(board, item)).then(() => toast('키를 복사했습니다.'))}>{itemKey(board, item)}</span>
                 <span className="grow" />
-                <button className={`btn btn-sm ${detail.watching ? 'btn-on' : ''}`} title={detail.watching ? '감시 해제' : '이 업무의 변경을 알림으로 받기'} onClick={async () => {
+                <button className={`btn btn-sm ${detail.watching ? 'btn-on' : ''}`} title={detail.watching ? '감시 해제' : `이 ${noun}의 변경을 알림으로 받기`} onClick={async () => {
                   try { const w = await (detail.watching ? api.del(`/api/items/${itemId}/watch`) : api.post(`/api/items/${itemId}/watch`)); setDetail({ ...detail, watchers: w, watching: !detail.watching }) } catch (e) { toast(e.message, 'error') }
                 }}><Icon name="eye" size={13} /> {detail.watching ? '감시 중' : '감시'}{detail.watchers.length > 0 && <span className="count">{detail.watchers.length}</span>}</button>
                 {!item.parentId && boardItem && <button className="icon-btn" title="다른 워크스페이스로 이동" aria-label="다른 워크스페이스로 이동" onClick={() => ops.moveItem(itemId)}><Icon name="move" /></button>}
-                <button className="icon-btn" title="업무 삭제" aria-label="업무 삭제" onClick={async () => { if (await ops.deleteItem(itemId)) onClose() }}><Icon name="trash" /></button>
+                {ops.canDelete(itemId) && <button className="icon-btn" title={`${noun} 삭제`} aria-label={`${noun} 삭제`} onClick={async () => { if (await ops.deleteItem(itemId)) onClose() }}><Icon name="trash" /></button>}
                 <button className="icon-btn" onClick={onClose} aria-label="닫기"><Icon name="x" /></button>
               </div>
 
               <div className="drawer-scroll">
                 <textarea ref={titleRef} className="drawer-title" value={name} rows={1} maxLength={300}
                   onChange={(e) => setName(e.target.value.replace(/\n/g, ''))} onBlur={saveName}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }} aria-label="업무 이름" />
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }} aria-label={`${noun} 이름`} />
 
                 <div className="props">
                   <Prop label={L('status')}><StatusChip item={item} statusById={statusById} statuses={board.statuses} onChange={update} /></Prop>
@@ -154,7 +156,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
 
                 {fieldCols.length > 0 && (
                   <section className="dsec">
-                    <div className="dsec-head"><h4>{item.parentId ? '하위 업무 필드' : '필드'}</h4></div>
+                    <div className="dsec-head"><h4>{item.parentId ? `하위 ${noun} 필드` : '필드'}</h4></div>
                     <div className="props fields">
                       {fieldCols.map((c) => (
                         <Prop key={c.id} label={c.name}>
@@ -169,7 +171,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
 
                 {backlinks.length > 0 && (
                   <section className="dsec">
-                    <div className="dsec-head"><h4>이 업무를 연결한 항목 <span className="count">{backlinks.reduce((n, b) => n + b.items.length, 0)}</span></h4></div>
+                    <div className="dsec-head"><h4>이 {noun}{josa(noun, '을/를')} 연결한 항목 <span className="count">{backlinks.reduce((n, b) => n + b.items.length, 0)}</span></h4></div>
                     {backlinks.map((b) => (
                       <div key={b.columnId} className="backlink">
                         <div className="backlink-head"><Icon name="link" size={12} /> {b.boardName} · {b.columnName}</div>
@@ -183,7 +185,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
 
                 {!item.parentId && (
                   <section className="dsec">
-                    <div className="dsec-head"><h4>하위 업무 {subs.length > 0 && <span className="count">{subs.length}</span>}</h4></div>
+                    <div className="dsec-head"><h4>하위 {noun} {subs.length > 0 && <span className="count">{subs.length}</span>}</h4></div>
                     {subs.length > 0 && (
                       <div className="sub-list">
                         {subs.map((sb) => (
@@ -196,7 +198,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                         ))}
                       </div>
                     )}
-                    <SubAdd onAdd={(name) => ops.addItem(item.groupId, name, undefined, item.id)} />
+                    <SubAdd noun={noun} onAdd={(name) => ops.addItem(item.groupId, name, undefined, item.id)} />
                   </section>
                 )}
 
@@ -226,7 +228,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                 <section className="dsec">
                   <div className="dsec-head"><h4>활동</h4></div>
                   <div className="activity">
-                    <div className="act-log"><Avatar user={detail.createdBy} size={18} /><span><b>{detail.createdBy?.name}</b>님이 업무를 만들었습니다</span><span className="act-time">{relTime(detail.createdAt)}</span></div>
+                    <div className="act-log"><Avatar user={detail.createdBy} size={18} /><span><b>{detail.createdBy?.name}</b>님이 {noun}{josa(noun, '을/를')} 만들었습니다</span><span className="act-time">{relTime(detail.createdAt)}</span></div>
                     {activity.map((u) => u.system ? (
                       <div key={u.id} className="act-log">
                         <Avatar user={u.author} size={18} /><span><b>{u.author.name}</b> · {u.content}</span><span className="act-time" title={fmtDateTime(u.createdAt)}>{relTime(u.createdAt)}</span>
@@ -377,12 +379,12 @@ function authorOf(u) {
   return u.author
 }
 
-function SubAdd({ onAdd }) {
+function SubAdd({ onAdd, noun }) {
   const [v, setV] = useState('')
   return (
     <div className="sub-add">
       <Icon name="plus" size={13} className="muted" />
-      <input placeholder="하위 업무 추가 후 Enter" value={v} maxLength={300} onChange={(e) => setV(e.target.value)}
+      <input placeholder={`하위 ${noun} 추가 후 Enter`} value={v} maxLength={300} onChange={(e) => setV(e.target.value)}
         onKeyDown={async (e) => { if (e.key === 'Enter' && v.trim()) { const n = v.trim(); setV(''); await onAdd(n) } }} />
     </div>
   )

@@ -197,7 +197,7 @@
            a.username AS a_username, a.display_name AS a_name, a.department AS a_department,
            i.priority, i.start_date, i.due_date, i.sort_order, i.created_at, i.updated_at,
            i.key_num, i.type_id, i.version_id, i.estimate_hours, i.progress,
-           i.responded_at, i.resolved_at, i.recur_rule
+           i.responded_at, i.resolved_at, i.recur_rule, i.created_by
       FROM tb_item i
       LEFT JOIN tb_app_user a ON a.id = i.assignee_id
      WHERE i.board_id = #{boardId}
