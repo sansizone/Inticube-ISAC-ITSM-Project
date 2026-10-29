@@ -48,4 +48,37 @@ public final class PhoneFormat {
         if (d.length() == 10) return d.substring(0, 3) + "-" + d.substring(3, 6) + "-" + d.substring(6);
         return v;
     }
+
+    /**
+     * 화면·엑셀 표시용 마스킹. 여러 번호(쉼표 구분)는 각각.
+     * 010-1234-5678 → 010-****-5678, 하이픈 없는 7자리 이상 숫자는 끝 4자리만 남김. 짧은 값(내선 등)은 그대로.
+     */
+    public static String mask(String raw) {
+        if (raw == null || raw.isBlank()) return raw;
+        StringBuilder out = new StringBuilder();
+        for (String part : format(raw).split("\\s*[,;\\n]\\s*")) {
+            if (part.isBlank()) continue;
+            if (out.length() > 0) out.append(", ");
+            out.append(maskOne(part.trim()));
+        }
+        return out.toString();
+    }
+
+    private static String maskOne(String v) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(\\d{2,4})-(\\d{3,4})-(\\d{4})$").matcher(v);
+        if (m.matches()) return m.group(1) + "-" + "*".repeat(m.group(2).length()) + "-" + m.group(3);
+        long digits = v.chars().filter(Character::isDigit).count();
+        if (digits < 7) return v;
+        StringBuilder sb = new StringBuilder();
+        long seen = 0;
+        for (char c : v.toCharArray()) {
+            if (Character.isDigit(c)) { seen++; sb.append(seen <= digits - 4 ? '*' : c); }
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    public static boolean isMasked(String v) {
+        return v != null && v.indexOf('*') >= 0;
+    }
 }

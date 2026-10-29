@@ -7,7 +7,7 @@ import { BoardMark } from './Sidebar.jsx'
 import { friendlyDate, todayStr, relTime, diffDays } from '../util.js'
 
 /**
- * 대시보드(홈): 요약 카드 3장 + 내 업무 + 댓글·멘션 + 즐겨찾는 워크스페이스
+ * 대시보드(홈): 요약 카드 3장 + 내 업무 + 공지사항 + 댓글·멘션 + 즐겨찾는 워크스페이스
  * 데이터: /api/dashboard/me (내 업무·완료 통계), /api/notifications/talk (댓글·멘션 알림)
  */
 const WD = ['일', '월', '화', '수', '목', '금', '토']
@@ -110,6 +110,7 @@ export default function Home() {
           </section>
 
           <div className="dash-side">
+            <NoticePanel />
             <TalkPanel talk={talk} tab={talkTab} setTab={setTalkTab} users={users} boardOf={boardOf}
               onOpen={(n) => {
                 if (!n.read) {
@@ -138,6 +139,44 @@ export default function Home() {
         </div>
       </div>
     </>
+  )
+}
+
+/** 공지사항: 공지 게시판(관리자만 쓰는 게시판 또는 이름에 '공지') 최근 글, 상단 고정글 먼저. 공지 게시판이 없으면 전체 고정글 */
+function NoticePanel() {
+  const [state, setState] = useState(null)
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const cats = await api.get('/api/post-categories')
+        const cat = cats.find((c) => /공지/.test(c.name)) || cats.find((c) => c.adminOnlyWrite) || null
+        const r = await api.get(`/api/posts?size=5${cat ? `&categoryId=${cat.id}` : ''}`)
+        const seen = new Set()
+        const list = [...(r.pinned || []), ...(cat ? r.content || [] : [])].filter((p) => !seen.has(p.id) && seen.add(p.id)).slice(0, 5)
+        if (alive) setState({ cat, list })
+      } catch { if (alive) setState({ cat: null, list: [] }) }
+    })()
+    return () => { alive = false }
+  }, [])
+  const isNew = (d) => d && Date.now() - new Date(d).getTime() < 3 * 86400000
+  return (
+    <section className="dash-panel">
+      <div className="dash-panel-head"><h2><Icon name="megaphone" size={16} /> 공지사항</h2></div>
+      {state == null ? <Spinner /> : state.list.length === 0 ? <p className="dash-empty">등록된 공지가 없습니다.</p> : (
+        <div className="dash-notice">
+          {state.list.map((p) => (
+            <a key={p.id} className="dash-notice-row" href={`#/posts/${p.id}`}>
+              {p.pinned && <span className="pin-badge"><Icon name="pin" size={11} /> 공지</span>}
+              <b className="ellipsis">{p.title}</b>
+              {isNew(p.createdAt) && <span className="dash-new">N</span>}
+              <span className="dash-notice-date">{String(p.createdAt || '').slice(5, 10).replace('-', '.')}</span>
+            </a>
+          ))}
+        </div>
+      )}
+      <a className="dash-more" href={state?.cat ? `#/posts?cat=${state.cat.id}` : '#/posts'}>공지사항 전체 보기</a>
+    </section>
   )
 }
 

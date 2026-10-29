@@ -42,6 +42,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(Map.of("message", "입력값이 올바르지 않습니다."));
     }
 
+    /** 없는 API 경로 (예: 서버가 이전 버전이라 새 API 가 없을 때) */
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<Map<String, String>> notFound(Exception e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "요청한 기능을 찾을 수 없습니다. 서버를 최신 버전으로 재시작해 주세요."));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<Map<String, String>> methodNotAllowed(Exception e) {
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(Map.of("message", "지원하지 않는 요청입니다. 서버를 최신 버전으로 재시작해 주세요."));
+    }
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, String>> typeMismatch(Exception e) {
+        return ResponseEntity.badRequest().body(Map.of("message", "요청 값 형식이 올바르지 않습니다."));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> unknown(Exception e) {
         log.error("Unhandled error", e);

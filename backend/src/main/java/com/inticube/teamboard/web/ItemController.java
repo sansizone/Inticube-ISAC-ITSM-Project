@@ -106,6 +106,16 @@ public class ItemController {
         return itemService.insertFormItem(id, req, me);
     }
 
+    public record RevealRequest(Long columnId, String reason) {}
+    public record RevealResponse(String value) {}
+
+    /** 전화번호 원문 열람 (관리자, 사유 필수, 이력 기록) */
+    @PostMapping("/items/{id}/reveal-phone")
+    public RevealResponse revealPhone(@PathVariable Long id, @RequestBody RevealRequest req, @AuthenticationPrincipal UserPrincipal me) {
+        guard.getItemChecked(id);
+        return new RevealResponse(itemService.getPhoneRevealed(id, req.columnId(), req.reason(), me));
+    }
+
     @GetMapping("/notifications/talk")
     public java.util.List<com.inticube.teamboard.web.dto.Dtos.NotificationDto> notificationTalk(@AuthenticationPrincipal UserPrincipal me) {
         return notificationService.getTalkList(me.id());

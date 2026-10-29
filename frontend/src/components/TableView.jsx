@@ -112,7 +112,7 @@ export default function TableView({ board, items, statusById, ops, users, filter
       default: {
         const col = sub ? subColByName[c.col.name] : c.col
         if (!col) return null
-        return <FieldEditor compact col={col} value={it.values?.[col.id] || ''} users={users} targetName={board.refBoards?.[col.refBoardId]}
+        return <FieldEditor compact col={col} itemId={it.id} value={it.values?.[col.id] || ''} users={users} targetName={board.refBoards?.[col.refBoardId]}
           options={optionsOf(col)} onSave={(v) => ops.updateItem(it.id, { values: { [col.id]: v } }).catch(() => {})} />
       }
     }

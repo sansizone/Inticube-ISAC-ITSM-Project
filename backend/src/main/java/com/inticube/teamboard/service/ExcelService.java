@@ -118,6 +118,10 @@ public class ExcelService {
             if (!template && !extraCols.isEmpty())
                 for (ItemValue v : itemDao.selectValuesByColumns(extraCols.values().stream().flatMap(List::stream).toList()))
                     vals.computeIfAbsent(v.getItemId(), k -> new HashMap<>()).put(v.getColumnId(), v.getValue());
+            // 전화번호 컬럼은 엑셀에도 마스킹
+            Set<Long> phoneCols = partsDao.selectColumnsByBoard(board.getId()).stream().filter(c -> "PHONE".equals(c.getType())).map(BoardColumn::getId).collect(java.util.stream.Collectors.toSet());
+            if (!phoneCols.isEmpty())
+                for (Map<Long, String> m : vals.values()) m.replaceAll((cid, v) -> phoneCols.contains(cid) ? PhoneFormat.mask(v) : v);
             // 연결 컬럼은 ID 대신 이름으로
             if (!relCols.isEmpty() && !vals.isEmpty()) {
                 Map<Long, List<String>> colValues = new HashMap<>();

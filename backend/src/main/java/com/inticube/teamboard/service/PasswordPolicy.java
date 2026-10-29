@@ -12,10 +12,14 @@ public final class PasswordPolicy {
 
     private PasswordPolicy() {}
 
-    /** 8~64자, 영문/숫자/특수문자 각 1자 이상, 아이디 포함 금지 */
+    public static final int MIN = 8, MAX = 20;
+
+    /** 8~20자, 영문/숫자/특수문자 각 1자 이상, 같은 문자 3번 연속 금지, 아이디 포함 금지 */
     public static void validate(String password, String username) {
-        if (password == null || password.length() < 8 || password.length() > 64)
-            throw ApiException.bad("비밀번호는 8~64자여야 합니다.");
+        if (password == null || password.length() < MIN || password.length() > MAX)
+            throw ApiException.bad("비밀번호는 " + MIN + "~" + MAX + "자여야 합니다.");
+        if (password.matches(".*(.)\\1\\1.*"))
+            throw ApiException.bad("같은 문자를 3번 이상 연속으로 쓸 수 없습니다.");
         if (!password.matches(".*[A-Za-z].*") || !password.matches(".*[0-9].*") || !password.matches(".*[^A-Za-z0-9].*"))
             throw ApiException.bad("비밀번호는 영문, 숫자, 특수문자를 각각 1자 이상 포함해야 합니다.");
         if (username != null && password.toLowerCase().contains(username.toLowerCase()))

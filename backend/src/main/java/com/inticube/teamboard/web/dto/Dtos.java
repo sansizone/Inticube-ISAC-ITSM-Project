@@ -138,7 +138,9 @@ public final class Dtos {
     public record BoardSummary(Long id, String name, String description, String ownerName,
                                long itemCount, long doneCount, boolean isPublic, long memberCount, String myRole, boolean favorite,
                                /** 진행률(%) 표시 여부 — 고객사·솔루션 같은 목록형 워크스페이스는 끔 (컬럼 설정 JSON 의 showProgress) */
-                               boolean showProgress) {}
+                               boolean showProgress,
+                               /** 워크스페이스 그룹 ID (그룹 기능이 꺼져 있으면 null) */
+                               Long groupId) {}
 
     public record BoardMemberDto(Long userId, String username, String name, String department, boolean active, String role) {}
     public record BoardMemberItem(Long userId, String role) {}
@@ -176,7 +178,9 @@ public final class Dtos {
 
     public record DutyMoveRequest(Long parentId, int position) {}
 
-    public record BoardRequest(@NotBlank @Size(max = 100) String name, @Size(max = 1000) String description, Boolean isPublic) {}
+    public record BoardRequest(@NotBlank @Size(max = 100) String name, @Size(max = 1000) String description, Boolean isPublic, Long groupId) {
+        public BoardRequest(String name, String description, Boolean isPublic) { this(name, description, isPublic, null); }
+    }
     public record StatusRequest(Long id, @NotBlank @Size(max = 50) String label,
                                 @NotBlank @Size(max = 20) String color, boolean done) {}
     public record GroupRequest(@NotBlank @Size(max = 100) String name, @Size(max = 20) String color) {}

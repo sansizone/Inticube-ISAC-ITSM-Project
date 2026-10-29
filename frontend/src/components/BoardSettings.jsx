@@ -1,3 +1,4 @@
+import { GroupSelect } from './WsGroups.jsx'
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useApp } from '../App.jsx'
@@ -78,6 +79,7 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
           <input className="input" value={keyPrefix} maxLength={10} onChange={(e) => setKeyPrefix(e.target.value.toUpperCase())} pattern="[A-Z][A-Z0-9]{1,9}" placeholder="REQ" />
           <span className="hint" style={{ margin: '4px 0 0' }}>업무 키 예: <b>{keyPrefix || 'TB'}-12</b></span></label>
       </div>
+      <BoardGroupField board={board} toast={toast} />
       <div className="field"><span>진행률</span>
         <label className="check" style={{ fontWeight: 400 }}>
           <input type="checkbox" checked={showProgress} onChange={async (e) => {
@@ -493,6 +495,30 @@ function AutomationSettings({ board, toast, onSaved }) {
         <span className="grow" />
         <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>규칙 저장</button>
       </div>
+    </div>
+  )
+}
+
+/** 워크스페이스 그룹 이동 (시스템 관리자 또는 두 그룹의 관리자). 바로 저장 */
+function BoardGroupField({ board, toast }) {
+  const { wsGroups, boards, me, refreshBoards, refreshGroups } = useApp()
+  const cur = boards.find((b) => b.id === board.id)?.groupId || null
+  const [value, setValue] = useState(cur)
+  useEffect(() => { setValue(cur) }, [cur])
+  if (!wsGroups.length) return null
+  const curGroup = wsGroups.find((g) => g.id === cur)
+  const can = me.role === 'ADMIN' || curGroup?.myRole === 'ADMIN'
+  return (
+    <div className="field"><span>워크스페이스 그룹</span>
+      <div className="row gap-sm">
+        <GroupSelect value={value} disabled={!can} onlyAdmin={me.role !== 'ADMIN'} onChange={async (g) => {
+          if (!g || g === cur) return
+          setValue(g)
+          try { await api.put(`/api/boards/${board.id}/ws-group`, { groupId: g }); toast('워크스페이스 그룹을 옮겼습니다.', 'success'); refreshBoards(); refreshGroups() }
+          catch (e) { setValue(cur); toast(e.message, 'error') }
+        }} />
+      </div>
+      <p className="hint" style={{ margin: '4px 0 0' }}>{can ? '옮기면 새 그룹의 멤버만 이 워크스페이스를 볼 수 있습니다. (바로 저장됨)' : '그룹 관리자만 다른 그룹으로 옮길 수 있습니다.'}</p>
     </div>
   )
 }

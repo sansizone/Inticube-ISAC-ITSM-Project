@@ -32,6 +32,7 @@ public class BoardService {
     private final FileStorageService storage;
     private final RelationService relations;
     private final AccessGuard guard;
+    private final WsGroupService wsGroups;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     @org.springframework.context.annotation.Lazy
     @org.springframework.beans.factory.annotation.Autowired
@@ -74,6 +75,7 @@ public class BoardService {
         for (BoardMember m : partsDao.selectMembersByUser(me.id())) myRoles.put(m.getBoardId(), m.getRole());
         Set<Long> visible = guard.getVisibleBoardIds();
         Set<Long> favs = new HashSet<>(partsDao.selectFavoriteBoardIds(me.id()));
+        Map<Long, Long> boardGroup = wsGroups.getBoardGroups();
         // 사용자별 정렬 순서: 저장된 순서 → 없는 워크스페이스는 이름순으로 뒤에
         Map<Long, Long> order = new HashMap<>();
         for (Map<String, Object> r : partsDao.selectBoardOrders(me.id())) order.put(lng(r, "board_id"), lngOr0(r, "sort_order"));
@@ -87,11 +89,12 @@ public class BoardService {
                     String role = myRoles.get(b.getId());
                     if (role == null && b.getOwner().getId().equals(me.id())) role = "OWNER";
                     return new BoardSummary(b.getId(), b.getName(), b.getDescription(), b.getOwner().getName(), total, done,
-                            b.isPublic(), memberCount.getOrDefault(b.getId(), 0L), role, favs.contains(b.getId()), isShowProgress(b));
+                            b.isPublic(), memberCount.getOrDefault(b.getId(), 0L), role, favs.contains(b.getId()), isShowProgress(b), boardGroup.get(b.getId()));
                 }).toList();
     }
 
     public BoardSummary insertBoard(BoardRequest req, UserPrincipal me) {
+        Long groupId = wsGroups.getGroupForNewBoard(req.groupId(), me);
         Board b = new Board();
         b.setName(req.name().trim());
         b.setDescription(req.description());
@@ -102,6 +105,7 @@ public class BoardService {
         boardDao.insert(b);
         b.setKeyPrefix(getUniquePrefix(getSuggestedPrefix(b.getName(), b.getId())));
         boardDao.update(b);
+        wsGroups.setBoardGroupRaw(b.getId(), groupId);
         for (int i = 0; i < DEFAULT_STATUSES.length; i++) {
             BoardStatus s = new BoardStatus();
             s.setBoard(b);
@@ -120,7 +124,7 @@ public class BoardService {
         insertMember(b.getId(), me.id(), "OWNER");
         insertDefaultTypes(b);
         insertDefaultViews(b.getId());
-        return new BoardSummary(b.getId(), b.getName(), b.getDescription(), me.name(), 0, 0, b.isPublic(), 1, "OWNER", false, true);
+        return new BoardSummary(b.getId(), b.getName(), b.getDescription(), me.name(), 0, 0, b.isPublic(), 1, "OWNER", false, true, groupId);
     }
 
     /** 진행률 표시 여부: 컬럼 설정 JSON 에 "showProgress": false 가 있으면 끔 (기본 표시) */
@@ -237,6 +241,10 @@ public class BoardService {
         if (!shortCols.isEmpty())
             for (Map<String, Object> v : itemDao.selectValueTuplesByColumns(shortCols))
                 vals.computeIfAbsent(lng(v, "item_id"), k -> new HashMap<>()).put(lng(v, "column_id"), str(v, "val_text"));
+        // 전화번호 컬럼은 마스킹해서 내려보냄 (원문은 관리자가 사유를 남기고 열람: ItemService.getPhoneRevealed)
+        Set<Long> phoneCols = cols.stream().filter(c -> "PHONE".equals(c.getType())).map(BoardColumn::getId).collect(Collectors.toSet());
+        if (!phoneCols.isEmpty())
+            for (Map<Long, String> m : vals.values()) m.replaceAll((cid, v) -> phoneCols.contains(cid) ? PhoneFormat.mask(v) : v);
         Map<Long, BigDecimal> spent = new HashMap<>();
         for (Map<String, Object> t : extraDao.selectTimeSumByBoard(id)) spent.put(lng(t, "item_id"), dec(t, "total"));
         List<ItemDto> itemDtos = new ArrayList<>();
