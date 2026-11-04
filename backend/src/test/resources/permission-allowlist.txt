@@ -1,0 +1,44 @@
+# 컨트롤러에서 guard.* 를 직접 부르지 않는 변경 API 목록 (PermissionCoverageTest 가 읽음)
+# 형식: METHOD 경로 | 권한을 어디서 검사하는지
+# 새 변경 API 는 컨트롤러에서 AccessGuard 로 '그 동작' 권한을 검사하는 것이 원칙이다.
+# 여기에 추가하려면 서비스 안에서 검사한다는 근거를 적고, MR 리뷰에서 확인받는다.
+POST /api/auth/login | 로그인 자체 (비로그인 허용)
+POST /api/auth/mfa | 로그인 2단계 (세션의 대기 사용자)
+POST /api/auth/mfa/setup | 본인 계정만 (me.id())
+POST /api/auth/mfa/enable | 본인 계정만
+POST /api/auth/mfa/disable | 본인 계정만 + 비밀번호·코드 확인
+POST /api/auth/logout | 본인 세션
+POST /api/auth/password | 본인 계정만 + 현재 비밀번호 확인
+POST /api/me/avatar | 본인 계정만
+DELETE /api/me/avatar | 본인 계정만
+POST /api/boards | 로그인 사용자 누구나 워크스페이스 생성 (만든 사람이 OWNER)
+POST /api/items/bulk-delete | checkAll(): 대상 전부 guard.getItemChecked, 서비스에서 setDeleteItemChecked
+POST /api/items/bulk-move | checkAll() + 서비스에서 setRemoveItemChecked
+POST /api/items/bulk-copy | checkAll()
+POST /api/views/{id}/submit | ItemService.insertFormItem 에서 guard.getViewChecked
+POST /api/notifications/{id}/read | 본인 알림만 (me.id() 조건)
+POST /api/notifications/read-all | 본인 알림만
+POST /api/import/monday/preview | 파일 분석만, 저장 없음
+POST /api/import/monday/apply | MondayImportService: 기존 워크스페이스면 guard.setManageChecked
+POST /api/posts | PostService: 카테고리 쓰기 권한(관리자 전용 카테고리) 검사
+PUT /api/posts/{id} | PostService: 작성자·관리자
+DELETE /api/posts/{id} | PostService: 작성자·관리자
+PUT /api/posts/{id}/pinned | PostService: 관리자
+POST /api/posts/{id}/attachments | PostService: 작성자·관리자
+DELETE /api/post-attachments/{id} | PostService: 업로더·관리자
+POST /api/posts/{id}/comments | PostService: 로그인 사용자
+PUT /api/post-comments/{id} | PostService: 작성자
+DELETE /api/post-comments/{id} | PostService: 작성자·관리자
+PUT /api/versions/{id} | BoardService.checkOwner
+DELETE /api/versions/{id} | BoardService.checkOwner
+DELETE /api/links/{id} | MaintenanceService: guard.getItemChecked
+DELETE /api/time/{id} | MaintenanceService: guard.getItemChecked + 본인·관리자 + 완료 잠금
+PUT /api/wiki/{id} | MaintenanceService: guard.getBoardChecked
+DELETE /api/wiki/{id} | MaintenanceService: guard.getBoardChecked
+POST /api/ws-groups | WsGroupService: 관리자
+PUT /api/ws-groups/{id} | WsGroupService: 그룹 관리자
+POST /api/ws-groups/reorder | WsGroupService: 본인 순서
+PUT /api/ws-groups/{id}/default | 본인 설정
+DELETE /api/ws-groups/{id}/default | 본인 설정
+DELETE /api/ws-groups/{id} | WsGroupService: 관리자
+PUT /api/ws-groups/{id}/members | WsGroupService: 그룹 관리자
