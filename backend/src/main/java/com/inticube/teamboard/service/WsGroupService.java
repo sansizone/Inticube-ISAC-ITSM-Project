@@ -36,6 +36,7 @@ public class WsGroupService implements ApplicationRunner {
     private final WsGroupDao dao;
     private final AppUserDao userDao;
     private final com.inticube.teamboard.config.AppProperties props;
+    private final AuditService audit;
     private volatile Boolean enabled;
 
     /** isDefault: 내가 기본으로 정한 그룹 (사이드바 첫 화면) */
@@ -145,14 +146,18 @@ public class WsGroupService implements ApplicationRunner {
         g.setCreatedBy(me.id());
         dao.insert(g);
         dao.insertMember(g.getId(), me.id(), "ADMIN");
+        audit.record("WSGROUP_CREATE", null, null, "WSGROUP", g.getId(), g.getName(), "워크스페이스 그룹 생성");
         return new GroupDto(g.getId(), g.getName(), g.getDescription(), g.getSortOrder(), "ADMIN", 1, 0, false);
     }
 
     public void updateGroup(Long id, GroupRequest req, UserPrincipal me) {
         WsGroup g = getManaged(id, me);
+        String before = g.getName();
         g.setName(name(req));
         g.setDescription(desc(req));
         dao.update(g);
+        audit.record("WSGROUP_UPDATE", null, null, "WSGROUP", g.getId(), g.getName(),
+                before.equals(g.getName()) ? "그룹 설명 수정" : "그룹 이름: " + before + " → " + g.getName());
     }
 
     /** 순서 변경 (시스템 관리자) */
@@ -171,12 +176,14 @@ public class WsGroupService implements ApplicationRunner {
     public void deleteGroup(Long id, UserPrincipal me) {
         requireEnabled();
         if (!me.isAdmin()) throw ApiException.forbidden();
-        if (dao.selectById(id) == null) throw ApiException.notFound("워크스페이스 그룹");
+        WsGroup gone = dao.selectById(id);
+        if (gone == null) throw ApiException.notFound("워크스페이스 그룹");
         long boards = dao.selectBoardCount(id);
         if (boards > 0) throw ApiException.bad("워크스페이스가 " + boards + "개 있는 그룹은 삭제할 수 없습니다. 워크스페이스를 다른 그룹으로 옮긴 뒤 삭제하세요.");
         if (dao.selectAll().size() <= 1) throw ApiException.bad("마지막 그룹은 삭제할 수 없습니다.");
         dao.deleteMembersByGroup(id);
         dao.delete(id);
+        audit.record("WSGROUP_DELETE", null, null, "WSGROUP", id, gone.getName(), "워크스페이스 그룹 삭제");
     }
 
     // ───────────────────────── 멤버
@@ -203,14 +210,23 @@ public class WsGroupService implements ApplicationRunner {
             throw ApiException.bad("자기 자신의 그룹 관리자 권한은 뺄 수 없습니다. 다른 관리자나 시스템 관리자에게 요청하세요.");
         Map<Long, String> cur = new HashMap<>();
         for (Map<String, Object> r : dao.selectMembers(id)) cur.put(((Number) r.get("user_id")).longValue(), (String) r.get("member_role"));
-        for (Long uid : cur.keySet()) if (!next.containsKey(uid)) dao.deleteMember(id, uid);
+        List<String> ch = new ArrayList<>();
+        for (Long uid : cur.keySet()) if (!next.containsKey(uid)) { dao.deleteMember(id, uid); ch.add(userName(uid) + " 제외"); }
         for (var e : next.entrySet()) {
             String old = cur.get(e.getKey());
-            if (old == null) dao.insertMember(id, e.getKey(), e.getValue());
-            else if (!old.equals(e.getValue())) dao.updateMemberRole(id, e.getKey(), e.getValue());
+            if (old == null) { dao.insertMember(id, e.getKey(), e.getValue()); ch.add(userName(e.getKey()) + " 추가(" + groupRoleKo(e.getValue()) + ")"); }
+            else if (!old.equals(e.getValue())) { dao.updateMemberRole(id, e.getKey(), e.getValue()); ch.add(userName(e.getKey()) + " 역할 " + groupRoleKo(old) + " → " + groupRoleKo(e.getValue())); }
+        }
+        if (!ch.isEmpty()) {
+            WsGroup g = dao.selectById(id);
+            audit.record("WSGROUP_MEMBERS", null, null, "WSGROUP", id, g == null ? null : g.getName(),
+                    ch.size() > 30 ? "멤버 " + ch.size() + "건 변경: " + String.join(" · ", ch.subList(0, 30)) + " …" : String.join(" · ", ch));
         }
         return getMembers(id, me);
     }
+
+    private String userName(Long id) { AppUser u = userDao.selectById(id); return u == null ? "#" + id : u.getName(); }
+    private static String groupRoleKo(String r) { return "ADMIN".equals(r) ? "그룹 관리자" : "멤버"; }
 
     /** 새 계정은 첫 그룹의 멤버로 (시스템 관리자가 나중에 다른 그룹으로 옮김) */
     public void insertUserToDefault(Long userId) {

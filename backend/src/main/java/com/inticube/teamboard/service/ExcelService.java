@@ -376,6 +376,7 @@ public class ExcelService {
 
         List<BoardGroup> gs = partsDao.selectGroupsByBoard(boardId);
         List<BoardStatus> ss = partsDao.selectStatusesByBoard(boardId);
+        BoardStatus initial = itemService.getInitialStatus(boardId);
         List<AppUser> allUsers = userDao.selectAllOrderByName();
         List<AppUser> activeUsers = allUsers.stream().filter(AppUser::isActive).toList();
         Map<Long, Item> boardItems = itemDao.selectByBoard(boardId).stream()
@@ -553,7 +554,7 @@ public class ExcelService {
                 if (changes.isEmpty()) { unchanged++; action = "변경 없음"; }
                 else { updated++; action = "수정"; updatePlans.add(Map.entry(p, changes)); }
             }
-            Long sid = p.id() == null && p.statusBlank() && !ss.isEmpty() ? ss.get(0).getId() : p.statusId();
+            Long sid = p.id() == null ? (initial == null ? null : initial.getId()) : p.statusId();
             preview.add(new PreviewRow(p.row(), action, p.id(),
                     p.groupName().isEmpty() ? (p.id() != null ? boardItems.get(p.id()).getGroup().getName() : (gs.isEmpty() ? "" : gs.get(0).getName())) : p.groupName(),
                     p.dutyId() == null ? null : dutyPaths.get(p.dutyId()),
@@ -561,6 +562,8 @@ public class ExcelService {
                     priorityLabel(p.priority()), p.start(), p.due()));
         }
 
+        if (initial != null && rows.stream().anyMatch(r -> r.id() == null && r.statusId() != null && !r.statusId().equals(initial.getId())))
+            warnings.add("새로 만드는 업무는 상태 칸과 관계없이 '" + initial.getLabel() + "'(으)로 생성됩니다.");
         if (!errors.isEmpty() || dryRun) {
             return new ImportResult(false, rows.size() + countErrorRows(errors), created, updated, unchanged, newGroups, errors, warnings,
                     preview.size() > 200 ? preview.subList(0, 200) : preview);
@@ -588,7 +591,7 @@ public class ExcelService {
             i.setBoard(board);
             i.setGroup(g);
             i.setName(p.name().trim());
-            i.setStatus(p.statusId() != null ? partsDao.selectStatusById(p.statusId()) : (p.statusBlank() && !ss.isEmpty() ? ss.get(0) : null));
+            i.setStatus(initial);  // 새 업무는 항상 '접수'로 생성 (완료 등으로 바로 만들 수 없음)
             BoardDuty duty = p.dutyId() == null ? null : dutyService.getDuty(p.dutyId());
             i.setDuty(duty);
             AppUser assignee = p.assigneeId() == null ? null : userDao.selectById(p.assigneeId());

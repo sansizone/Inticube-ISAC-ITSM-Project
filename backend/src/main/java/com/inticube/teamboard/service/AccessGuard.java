@@ -78,12 +78,18 @@ public class AccessGuard {
     }
 
     /** 업무 삭제: 시스템 관리자, 워크스페이스 관리자, 그 업무를 등록한 사람만 */
-    public void setDeleteItemChecked(com.inticube.teamboard.domain.Item i) {
+    public void setDeleteItemChecked(com.inticube.teamboard.domain.Item i) { setRemoveItemChecked(i, "삭제할"); }
+
+    /**
+     * 업무를 이 워크스페이스에서 없애는 작업(삭제·다른 워크스페이스로 이동·그룹 삭제) 권한:
+     * 시스템 관리자, 워크스페이스 관리자, 업무를 등록한 사람만. 일반 멤버가 남의 업무를 없애면 403
+     */
+    public void setRemoveItemChecked(com.inticube.teamboard.domain.Item i, String verb) {
         UserPrincipal me = getMe();
         if (me.isAdmin()) return;
         if (i.getCreatedBy() != null && me.id().equals(i.getCreatedBy().getId())) return;
         if (getCanManage(i.getBoard())) return;
-        throw new ApiException(HttpStatus.FORBIDDEN, "'" + i.getName() + "' 은(는) 등록한 사람이나 관리자만 삭제할 수 있습니다.");
+        throw new ApiException(HttpStatus.FORBIDDEN, "'" + i.getName() + "' 은(는) 등록한 사람이나 관리자만 " + verb + " 수 있습니다.");
     }
 
     public void setManageChecked(Board b) {
@@ -110,6 +116,8 @@ public class AccessGuard {
     public Item getItemChecked(Long itemId) {
         Item i = itemDao.selectById(itemId);
         if (i == null) throw ApiException.notFound("업무");
+        if (i.getDeletedAt() != null) throw new ApiException(HttpStatus.NOT_FOUND, "삭제되어 휴지통에 있는 업무입니다.");
+        if (i.getDeletedAt() != null) throw new ApiException(HttpStatus.NOT_FOUND, "삭제되어 휴지통에 있는 업무입니다.");
         check(i.getBoard());
         return i;
     }

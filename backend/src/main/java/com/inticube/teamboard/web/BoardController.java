@@ -61,7 +61,7 @@ public class BoardController {
     public GroupDto updateGroup(@PathVariable Long id, @Valid @RequestBody GroupRequest req) { guard.getGroupChecked(id); return boardService.updateGroup(id, req); }
 
     @DeleteMapping("/groups/{id}")
-    public void deleteGroup(@PathVariable Long id) { guard.getGroupChecked(id); boardService.deleteGroup(id); }
+    public void deleteGroup(@PathVariable Long id, @RequestParam(required = false) String reason) { guard.getGroupChecked(id); boardService.deleteGroup(id, reason); }
 
     @PostMapping("/groups/{id}/items")
     public ItemDto addItem(@PathVariable Long id, @Valid @RequestBody ItemCreateRequest req, @AuthenticationPrincipal UserPrincipal me) {

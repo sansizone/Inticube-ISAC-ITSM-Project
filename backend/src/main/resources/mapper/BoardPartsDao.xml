@@ -3,7 +3,7 @@
 <!--
   워크스페이스 구성 요소
   - 그룹        TB_BOARD_GROUP   : 업무를 묶는 섹션
-  - 상태        TB_BOARD_STATUS  : 대기/진행중/완료 … (is_done = 완료 취급)
+  - 상태        TB_BOARD_STATUS  : 대기/처리중/완료 … (is_done = 완료 취급)
   - 컬럼        TB_BOARD_COLUMN  : 사용자 정의 컬럼 (RELATION 은 ref_board_id/ref_column_id 로 다른 워크스페이스 참조)
   - 유형        TB_BOARD_TYPE    : 요청/장애/변경 … + SLA 목표 시간
   - 버전        TB_BOARD_VERSION : 버전·마일스톤 (로드맵)

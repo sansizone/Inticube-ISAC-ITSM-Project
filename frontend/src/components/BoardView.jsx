@@ -21,7 +21,7 @@ import { useFavorite } from './Sidebar.jsx'
 import { ViewTabs, ColumnPicker, parseViewConfig } from './Views.jsx'
 import { MoveItemModal } from './Workspace.jsx'
 import { BulkBar } from './BulkActions.jsx'
-import { rememberRefs, columnsFor, columnConfig, itemNoun, itemTitle, josa, withPeopleSources } from './Fields.jsx'
+import { rememberRefs, columnsFor, columnConfig, itemNoun, itemTitle, josa, withPeopleSources, srPolicy } from './Fields.jsx'
 
 export default function BoardView({ boardId, view, itemParam }) {
   const { me, users, refreshBoards } = useApp()
@@ -73,8 +73,40 @@ export default function BoardView({ boardId, view, itemParam }) {
   const ops = useMemo(() => ({
     async updateItem(id, patch) {
       const prev = boardRef.current.items.find((i) => i.id === id)
+      // SR 통제: 완료 SR 재개·합의완료일 변경은 사유를 받아 함께 보냄
+      const sp = srPolicy(boardRef.current)
+      if (sp && prev) {
+        const sts = boardRef.current.statuses
+        const was = sts.find((s) => s.id === prev.statusId), next = 'statusId' in patch ? sts.find((s) => s.id === patch.statusId) : null
+        if (sp.lockDone && was?.done && next && !next.done && !patch.reopenReason) {
+          const r = await confirm(`완료된 ${itemNoun(boardRef.current)}${josa(itemNoun(boardRef.current), '을/를')} '${next.label}'(으)로 재개할까요?\n처리완료일은 비워지고, 재개 사유가 기록됩니다.`,
+            { danger: false, okText: '재개', reason: true, reasonLabel: '재개 사유', reasonPlaceholder: '예: 고객 재요청, 처리 누락 발견' })
+          if (!r) { const e = new Error('취소'); e.cancelled = true; throw e }
+          patch = { ...patch, reopenReason: r }
+        }
+        const ac = sp.agreedCol
+        if (ac && patch.values && (ac in patch.values) && !patch.changeReason) {
+          const before = prev.values?.[ac] || '', nv = patch.values[ac] || ''
+          if (before && before !== nv) {
+            const col = boardRef.current.columns.find((c) => c.id === ac)
+            const r = await confirm(`'${col?.name || '합의완료일'}'을(를) ${before} → ${nv || '없음'}(으)로 바꿉니다.\n최초 합의일은 따로 보존되며, 변경 사유가 기록됩니다.`,
+              { danger: false, okText: '변경', reason: true, reasonLabel: '변경 사유', reasonPlaceholder: '예: 고객 요청으로 일정 조정' })
+            if (!r) { const e = new Error('취소'); e.cancelled = true; throw e }
+            patch = { ...patch, changeReason: r }
+          }
+        }
+      }
+      // 동시 수정 충돌 검사용: 편집을 시작할 때 화면에 있던 값 (서버가 그 사이 바뀌었으면 409)
+      if (prev && !patch.base && ('name' in patch || patch.values)) {
+        const base = {}
+        if ('name' in patch) base.name = prev.name
+        if (patch.values) base.values = Object.fromEntries(Object.keys(patch.values).map((k) => [k, prev.values?.[k] ?? '']))
+        patch = { ...patch, base }
+      }
       const local = { ...patch }
+      delete local.base
       if ('assigneeId' in patch) { local.assignee = users.find((u) => u.id === patch.assigneeId) || null; delete local.assigneeId }
+      delete local.reopenReason; delete local.changeReason
       if ('values' in patch) local.values = { ...(prev.values || {}), ...patch.values }
       setItems((items) => items.map((i) => (i.id === id ? { ...i, ...local } : i)))
       try {
@@ -92,6 +124,7 @@ export default function BoardView({ boardId, view, itemParam }) {
       } catch (e) {
         setItems((items) => items.map((i) => (i.id === id ? prev : i)))
         toast(e.message, 'error')
+        if (e.status === 409) load()  // 다른 사람이 바꾼 최신 값으로 화면 갱신
         throw e
       }
     },
@@ -112,9 +145,11 @@ export default function BoardView({ boardId, view, itemParam }) {
     async deleteItem(id) {
       const it = boardRef.current.items.find((i) => i.id === id)
       const b = boardRef.current, noun = (it.parentId ? '하위 ' : '') + itemNoun(b)
-      if (!(await confirm(`'${itemTitle(b, it)}' ${noun}${josa(noun, '을/를')} 삭제할까요?\n${it.parentId ? '' : `하위 ${itemNoun(b)}·`}댓글·첨부파일도 함께 삭제됩니다.`, { okText: '삭제' }))) return false
+      const reason = await confirm(`'${itemTitle(b, it)}' ${noun}${josa(noun, '을/를')} 삭제할까요?\n${it.parentId ? '' : `하위 ${itemNoun(b)}·`}댓글·첨부파일과 함께 휴지통으로 옮겨지며, 시스템 관리자가 복원할 수 있습니다.`,
+        { okText: '삭제', reason: true, reasonLabel: '삭제 사유', reasonPlaceholder: '예: 중복 등록, 잘못 등록함' })
+      if (!reason) return false
       try {
-        await api.del(`/api/items/${id}`)
+        await api.del(`/api/items/${id}?reason=${encodeURIComponent(reason)}`)
         setItems((items) => items.filter((i) => i.id !== id))
         refreshBoards()
         return true
@@ -144,9 +179,11 @@ export default function BoardView({ boardId, view, itemParam }) {
     async deleteGroup(id) {
       const g = boardRef.current.groups.find((x) => x.id === id)
       const count = boardRef.current.items.filter((i) => i.groupId === id).length
-      if (!(await confirm(`'${g.name}' 그룹을 삭제할까요?${count ? `\n포함된 ${itemNoun(boardRef.current)} ${count}개도 함께 삭제됩니다.` : ''}`, { okText: '삭제' }))) return
+      const ans = await confirm(`'${g.name}' 그룹을 삭제할까요?${count ? `\n포함된 ${itemNoun(boardRef.current)} ${count}개는 휴지통으로 옮겨지며, 시스템 관리자가 복원할 수 있습니다.` : ''}`,
+        count ? { okText: '삭제', reason: true, reasonLabel: '삭제 사유', reasonPlaceholder: '예: 업무 구분 변경으로 그룹 정리' } : { okText: '삭제' })
+      if (!ans) return
       try {
-        await api.del(`/api/groups/${id}`)
+        await api.del(`/api/groups/${id}${count ? `?reason=${encodeURIComponent(ans)}` : ''}`)
         setBoard((b) => ({ ...b, groups: b.groups.filter((x) => x.id !== id), items: b.items.filter((i) => i.groupId !== id) }))
         refreshBoards()
       } catch (e) { toast(e.message, 'error') }

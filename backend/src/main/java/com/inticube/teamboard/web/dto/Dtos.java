@@ -59,7 +59,9 @@ public final class Dtos {
                                     Role role, Boolean active, @Size(max = 50) String username) {}
     public record TempPasswordResponse(String username, String temporaryPassword) {}
     public record BulkActivateItem(Long id, String username, String department) {}
-    public record BulkActivateRequest(List<BulkActivateItem> users) {}
+    public record BulkActivateRequest(List<BulkActivateItem> users) {
+        public BulkActivateRequest { users = users == null ? List.of() : users.stream().filter(java.util.Objects::nonNull).toList(); }
+    }
     public record BulkActivateResult(Long id, String name, String username, String temporaryPassword) {}
 
     // ---------- 보드 ----------
@@ -144,7 +146,9 @@ public final class Dtos {
 
     public record BoardMemberDto(Long userId, String username, String name, String department, boolean active, String role) {}
     public record BoardMemberItem(Long userId, String role) {}
-    public record BoardMembersRequest(List<BoardMemberItem> members, Boolean isPublic) {}
+    public record BoardMembersRequest(List<BoardMemberItem> members, Boolean isPublic) {
+        public BoardMembersRequest { members = members == null ? null : members.stream().filter(java.util.Objects::nonNull).toList(); }
+    }
 
     /** 보기 탭. config = 필터·정렬·표시 컬럼 JSON (프론트 정의) */
     public record ViewDto(Long id, String name, String type, String config, int sortOrder) {
@@ -154,7 +158,11 @@ public final class Dtos {
     public record ColumnConfigRequest(@Size(max = 20000) String config) {}
     public record MoveRequest(Long boardId, Long groupId) {}
     /** 여러 업무 한꺼번에: 이동(boardId·groupId)·복제·삭제·내보내기 */
-    public record BulkRequest(java.util.List<Long> ids, Long boardId, Long groupId) {}
+    public record BulkRequest(java.util.List<Long> ids, Long boardId, Long groupId, String reason) {
+        public BulkRequest {
+            ids = ids == null ? List.of() : ids.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        }
+    }
     /** done: 처리한 업무 수, skipped: 건너뛴 수(상위와 함께 처리된 하위 업무 등) */
     public record BulkResult(int done, int skipped) {}
     public record PickOption(Long id, String label, String sub) {}
@@ -185,26 +193,39 @@ public final class Dtos {
                                 @NotBlank @Size(max = 20) String color, boolean done) {}
     public record GroupRequest(@NotBlank @Size(max = 100) String name, @Size(max = 20) String color) {}
     public record ItemCreateRequest(@NotBlank @Size(max = 300) String name, Long parentId) {}
-    public record ReorderRequest(List<Long> ids) {}
+    /** ids 가 없거나 null 이 섞여 와도 서버 오류가 나지 않게 정리 */
+    public record ReorderRequest(List<Long> ids) {
+        public ReorderRequest {
+            ids = ids == null ? List.of() : ids.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        }
+    }
     /** 양식 보기 접수: values 키는 "description" 또는 컬럼 ID */
     public record FormSubmitRequest(@Size(max = 300) String name, Map<String, Object> values) {}
     /** 자동화 규칙 저장 */
     public record AutomationRule(Long statusId, String action, Long groupId, Long boardId) {}
-    public record AutomationRequest(List<AutomationRule> rules) {}
+    public record AutomationRequest(List<AutomationRule> rules) {
+        public AutomationRequest { rules = rules == null ? List.of() : rules.stream().filter(java.util.Objects::nonNull).toList(); }
+    }
 
     // ---------- 아이템 상세 ----------
     /** authorName: 외부에서 가져온 댓글의 원래 작성자 이름 (없으면 null) */
-    public record UpdateDto(Long id, Long parentId, UserSummary author, String authorName, String content, boolean system, LocalDateTime createdAt, LocalDateTime updatedAt) {
+    /** deleted 면 내용은 가리고(원문은 DB에 보존) '삭제된 댓글'로 표시 */
+    public record UpdateDto(Long id, Long parentId, UserSummary author, String authorName, String content, boolean system, LocalDateTime createdAt, LocalDateTime updatedAt,
+                            boolean deleted, LocalDateTime deletedAt) {
         public static UpdateDto of(ItemUpdate u) {
-            return new UpdateDto(u.getId(), u.getParentId(), UserSummary.of(u.getAuthor()), u.getAuthorName(), u.getContent(), u.isSystem(), u.getCreatedAt(), u.getUpdatedAt());
+            boolean del = u.getDeletedAt() != null;
+            return new UpdateDto(u.getId(), u.getParentId(), UserSummary.of(u.getAuthor()), u.getAuthorName(), del ? "삭제된 댓글입니다." : u.getContent(), u.isSystem(),
+                    u.getCreatedAt(), u.getUpdatedAt(), del, u.getDeletedAt());
         }
     }
 
+    /** warning: 업로드 직후에만 채움 (같은 내용의 파일이 이미 있음 등) */
     public record AttachmentDto(Long id, String originalName, String contentType, long fileSize,
-                                String uploaderName, Long uploaderId, LocalDateTime createdAt) {
-        public static AttachmentDto of(Attachment a) {
+                                String uploaderName, Long uploaderId, LocalDateTime createdAt, String warning) {
+        public static AttachmentDto of(Attachment a) { return of(a, null); }
+        public static AttachmentDto of(Attachment a, String warning) {
             return new AttachmentDto(a.getId(), a.getOriginalName(), a.getContentType(), a.getFileSize(),
-                    a.getUploader().getName(), a.getUploader().getId(), a.getCreatedAt());
+                    a.getUploader().getName(), a.getUploader().getId(), a.getCreatedAt(), warning);
         }
     }
 

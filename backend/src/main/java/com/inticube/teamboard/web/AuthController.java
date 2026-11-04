@@ -36,6 +36,7 @@ public class AuthController {
     private final LoginAttemptService attempts;
     private final UserService userService;
     private final com.inticube.teamboard.service.TotpService totp;
+    private final com.inticube.teamboard.service.AuditService audit;
     private static final String MFA_PENDING = "MFA_PENDING_USER";
     private static final String MFA_PENDING_AT = "MFA_PENDING_AT";
 
@@ -54,9 +55,11 @@ public class AuthController {
         try {
             auth = authManager.authenticate(UsernamePasswordAuthenticationToken.unauthenticated(username, req.password()));
         } catch (DisabledException e) {
+            audit.recordAs(null, null, "LOGIN_FAIL", null, null, "USER", null, username, "비활성 계정으로 로그인 시도");
             throw new ApiException(HttpStatus.UNAUTHORIZED, "비활성화된 계정입니다. 관리자에게 문의하세요.");
         } catch (AuthenticationException e) {
             attempts.failed(username);
+            audit.recordAs(null, null, "LOGIN_FAIL", null, null, "USER", null, username, "아이디 또는 비밀번호 불일치");
             throw new ApiException(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호가 올바르지 않습니다.");
         }
         attempts.succeeded(username);
@@ -85,6 +88,7 @@ public class AuthController {
         if (attempts.isLocked(key)) throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "인증 코드 실패가 반복되어 잠시 잠겼습니다. 잠시 후 다시 시도하세요.");
         if (!totp.getVerified(u, req.code())) {
             attempts.failed(key);
+            audit.recordAs(u.getId(), u.getName(), "LOGIN_FAIL", null, null, "USER", u.getId(), u.getUsername(), "2단계 인증 코드 불일치");
             throw new ApiException(HttpStatus.UNAUTHORIZED, "인증 코드가 맞지 않습니다.");
         }
         attempts.succeeded(key);
@@ -94,6 +98,7 @@ public class AuthController {
 
     private MeDto finishLogin(AppUser u, HttpServletRequest request, HttpServletResponse response) {
         UserPrincipal principal = UserPrincipal.of(u).withoutPassword();
+        audit.recordAs(u.getId(), u.getName(), "LOGIN", null, null, "USER", u.getId(), u.getUsername(), u.isTotpEnabled() ? "로그인 (2단계 인증)" : "로그인");
         HttpSession existing = request.getSession(false);
         if (existing != null) request.changeSessionId(); // 세션 고정 공격 방지
         saveAuthentication(principal, request, response);

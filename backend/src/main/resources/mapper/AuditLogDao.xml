@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  감사 로그 (TB_AUDIT_LOG)
+  - v3.4 업그레이드 SQL 로 만든다. 테이블이 없으면 AuditService 가 DB 기록을 끄고 로그 파일에만 남긴다
+-->
+<mapper namespace="com.inticube.teamboard.dao.AuditLogDao">
+
+  <select id="selectTableCount" resultType="long">
+    SELECT COUNT(*) FROM information_schema.tables
+     WHERE table_schema = current_schema() AND table_name = 'tb_audit_log'
+  </select>
+
+  <insert id="insert" parameterType="map">
+    INSERT INTO tb_audit_log (created_at, actor_id, actor_name, action, board_id, board_name,
+                              target_type, target_id, target_name, detail, client_ip)
+    VALUES (#{createdAt}, #{actorId}, #{actorName}, #{action}, #{boardId}, #{boardName},
+            #{targetType}, #{targetId}, #{targetName}, #{detail}, #{clientIp})
+  </insert>
+
+  <sql id="where">
+    <where>
+      <if test="from != null">AND a.created_at &gt;= #{from}</if>
+      <if test="to != null">AND a.created_at &lt; #{to}</if>
+      <if test="actorId != null">AND a.actor_id = #{actorId}</if>
+      <if test="action != null and action != ''">AND a.action = #{action}</if>
+      <if test="q != null and q != ''">
+        AND (a.target_name ILIKE '%' || #{q} || '%' OR a.board_name ILIKE '%' || #{q} || '%'
+             OR a.detail ILIKE '%' || #{q} || '%' OR a.actor_name ILIKE '%' || #{q} || '%')
+      </if>
+    </where>
+  </sql>
+
+  <select id="selectPage" resultType="map">
+    SELECT a.id, a.created_at, a.actor_id, a.actor_name, a.action, a.board_id, a.board_name,
+           a.target_type, a.target_id, a.target_name, a.detail, a.client_ip
+      FROM tb_audit_log a
+    <include refid="where"/>
+     ORDER BY a.created_at DESC, a.id DESC
+     LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="selectCount" resultType="long">
+    SELECT COUNT(*) FROM tb_audit_log a
+    <include refid="where"/>
+  </select>
+</mapper>

@@ -46,6 +46,7 @@ public class ExcelController {
                                                  @RequestParam(defaultValue = "true") boolean dryRun,
                                                  @AuthenticationPrincipal UserPrincipal me) {
         guard.getBoardChecked(boardId);
+        if (!me.isAdmin()) throw new com.inticube.teamboard.web.ApiException(org.springframework.http.HttpStatus.FORBIDDEN, "엑셀 가져오기는 관리자만 할 수 있습니다.");
         return excelService.batchImport(boardId, file, dryRun, me);
     }
 }

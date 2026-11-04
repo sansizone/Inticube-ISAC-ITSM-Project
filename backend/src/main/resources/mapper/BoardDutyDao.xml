@@ -81,6 +81,7 @@
       FROM tb_item
      WHERE board_id = #{boardId}
        AND duty_id IS NOT NULL
+       AND deleted_at IS NULL
      GROUP BY duty_id
   </select>
 

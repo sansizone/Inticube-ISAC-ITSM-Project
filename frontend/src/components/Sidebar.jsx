@@ -162,7 +162,6 @@ export default function Sidebar({ route }) {
             return (
               <a key={c.id} href={`#/posts?cat=${c.id}`} className={`side-item ${active ? 'active' : ''}`}>
                 <Icon name={categoryIcon(c)} /> <span className="grow ellipsis">{c.name}</span>
-                {c.postCount > 0 && <span className="side-meta">{c.postCount}</span>}
               </a>
             )
           })}
@@ -171,8 +170,10 @@ export default function Sidebar({ route }) {
       {section === 'admin' && me.role === 'ADMIN' && <>
         <div className="panel-head"><span>관리</span></div>
         <div className="sidenav-menu">
-          <a href="#/admin" className={`side-item ${route.page === 'admin' && route.tab !== 'boards' ? 'active' : ''}`}><Icon name="users" /> 사용자 관리</a>
+          <a href="#/admin" className={`side-item ${route.page === 'admin' && !['boards', 'audit', 'trash'].includes(route.tab) ? 'active' : ''}`}><Icon name="users" /> 사용자 관리</a>
           <a href="#/admin/boards" className={`side-item ${route.page === 'admin' && route.tab === 'boards' ? 'active' : ''}`}><Icon name="settings" /> 게시판 관리</a>
+          <a href="#/admin/trash" className={`side-item ${route.page === 'admin' && route.tab === 'trash' ? 'active' : ''}`}><Icon name="trash" /> 휴지통</a>
+          <a href="#/admin/audit" className={`side-item ${route.page === 'admin' && route.tab === 'audit' ? 'active' : ''}`}><Icon name="shield" /> 감사 로그</a>
         </div>
       </>}
       {creating && <CreateBoardModal groupId={typeof creating === 'number' ? creating : null} onClose={() => setCreating(false)} />}
@@ -236,7 +237,7 @@ export function CreateBoardModal({ onClose, groupId: initialGroup }) {
           <textarea className="input" rows={3} maxLength={1000} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="이 워크스페이스에서 관리할 내용을 한 줄로 설명하세요" /></label>
         {wsGroups.length > 0 && <label className="field"><span>워크스페이스 그룹</span><GroupSelect value={groupId} onChange={setGroupId} /></label>}
         <div className="field"><span>공개 범위</span><VisibilityPicker value={isPublic} onChange={setPublic} /></div>
-        <p className="hint">기본 상태(대기 · 진행중 · 막힘 · 완료)·그룹 1개·보기 탭이 함께 만들어집니다. 컬럼·탭·멤버는 만든 뒤 설정에서 바꿀 수 있습니다. 기존 업무 엑셀이 있으면 <a className="link" href="#/import/excel" onClick={onClose}>엑셀로 워크스페이스 만들기</a>.</p>
+        <p className="hint">기본 상태(대기 · 처리중 · 막힘 · 완료)·그룹 1개·보기 탭이 함께 만들어집니다. 컬럼·탭·멤버는 만든 뒤 설정에서 바꿀 수 있습니다. 기존 업무 엑셀이 있으면 <a className="link" href="#/import/excel" onClick={onClose}>엑셀로 워크스페이스 만들기</a>.</p>
         <div className="form-actions">
           <button type="button" className="btn" onClick={onClose}>취소</button>
           <button className="btn btn-primary" disabled={busy}>만들기</button>

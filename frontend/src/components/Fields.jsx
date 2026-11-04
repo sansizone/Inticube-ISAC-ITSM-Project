@@ -252,6 +252,31 @@ export function columnsFor(board, scope) {
   return (board.columns || []).filter((c) => c.scope === scope).sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
 }
 
+/** SR 통제 규칙 (board.columnConfig.srPolicy). 꺼져 있으면 null */
+export function srPolicy(board) {
+  let c = null
+  try { c = board?.columnConfig ? JSON.parse(board.columnConfig) : null } catch { c = null }
+  const p = c?.srPolicy
+  return p && p.enabled ? p : null
+}
+
+/** 서버가 자동으로 채우는(직접 수정 불가) 컬럼 ID */
+export function srAutoCols(board) {
+  const p = srPolicy(board)
+  if (!p) return new Set()
+  const s = new Set([p.completedAtCol, p.delayCol, p.firstAgreedCol, p.workHoursCol].filter(Boolean))
+  if (p.gradeCol && p.impactCol && p.urgencyCol) s.add(p.gradeCol)
+  return s
+}
+
+/** 드롭다운 후보: 영향도·긴급도는 상/중/하 고정, 나머지는 기존 값에서 */
+export function fieldOptions(board, col) {
+  if (col.type !== 'DROPDOWN' && col.type !== 'PEOPLE') return []
+  const p = srPolicy(board)
+  if (p && (col.id === p.impactCol || col.id === p.urgencyCol)) return [['상', 0], ['중', 0], ['하', 0]]
+  return distinctValues(board.items || [], col)
+}
+
 /** 컬럼별 고유값 (드롭다운 후보·필터용) */
 export function distinctValues(items, col) {
   const m = new Map()
@@ -318,6 +343,7 @@ export function FieldView({ col, value, compact }) {
 
 /** 상세 화면 편집기: 보기 상태에서 누르면 편집, 포커스를 잃거나 Enter 면 저장 */
 export function FieldEditor(props) {
+  if (props.auto) return <span className="auto-field" title="SR 통제 규칙에 따라 서버가 자동으로 기록합니다 (직접 수정 불가)"><FieldView col={props.col} value={props.value} compact={props.compact} /><span className="auto-tag">자동</span></span>
   if (props.col.type === 'RELATION') return <RelationEditor col={props.col} value={props.value} onSave={props.onSave} targetName={props.targetName} compact={props.compact} />
   return <PlainFieldEditor {...props} />
 }
@@ -331,6 +357,7 @@ function PlainFieldEditor({ col, value, onSave, options = [], users = [], compac
 
 /** 사람 컬럼 편집: 선택된 사람 칩 + 검색해서 고르기 (계정 목록 기준, 계정 없는 이름도 추가 가능) */
 export function PeopleEditor({ col, value, onSave, options = [], users = [], compact }) {
+  const { me } = useApp() || {}
   const names = splitPeople(value)
   const pop = usePopover()
   const [q, setQ] = useState('')
@@ -354,7 +381,12 @@ export function PeopleEditor({ col, value, onSave, options = [], users = [], com
   const extra = options.map(([o]) => o).flatMap(splitPeople).filter((n) => !byName.has(n) && !srcNames.has(n))
   const cands = [...users.map((u) => ({ name: u.name, user: u, sub: [u.department, u.username].filter(Boolean).join(' · ') })),
     ...[...new Set(extra)].map((n) => ({ name: n, user: nameUser(n), sub: '계정 없음' }))]
-  const shown = (ql ? cands.filter((c) => c.name.toLowerCase().includes(ql) || (c.sub || '').toLowerCase().includes(ql)) : cands).slice(0, 80)
+  const matchQ = (c) => !ql || c.name.toLowerCase().includes(ql) || (c.sub || '').toLowerCase().includes(ql) || (c.isMe && '나'.includes(ql))
+  // 로그인한 사용자를 '추천'으로 맨 위에 고정
+  const myCand = me ? cands.find((c) => c.user?.id === me.id) : null
+  if (myCand) myCand.isMe = true
+  const showMe = myCand && matchQ(myCand)
+  const shown = cands.filter((c) => c !== myCand && matchQ(c)).slice(0, 80)
   const exact = ql && (cands.some((c) => c.name.toLowerCase() === ql) || (src || []).some((o) => o.label.toLowerCase() === ql))
   const canAdd = ql && !exact
   const addToSource = async () => {
@@ -364,13 +396,14 @@ export function PeopleEditor({ col, value, onSave, options = [], users = [], com
       save([...names, o.label]); setQ('')
     } catch (e) { setErr(e.message) } finally { setAdding(false) }
   }
-  const row = (key, name, user, sub) => {
+  const row = (key, name, user, sub, isMe) => {
     const on = names.includes(name)
     return (
       <button key={key} className={`menu-row ${on ? 'active' : ''}`} onClick={() => toggle(name)}>
         <span className={`check-box ${on ? 'on' : ''}`}>{on && <Icon name="check" size={11} />}</span>
         <Avatar user={user} size={20} />
         <span className="grow ellipsis">{name}{sub && <span className="muted small"> · {sub}</span>}</span>
+        {isMe && <span className="me-badge">나</span>}
       </button>
     )
   }
@@ -383,6 +416,11 @@ export function PeopleEditor({ col, value, onSave, options = [], users = [], com
                 onKeyDown={(e) => { if (e.key === 'Enter' && canAdd) { e.preventDefault(); if (source) addToSource(); else { save([...names, q.trim()]); setQ('') } } }} />
             </div>
             <div style={{ maxHeight: '20rem', overflowY: 'auto' }}>
+              {showMe && <>
+                <div className="menu-title">추천</div>
+                {row('me', myCand.name, myCand.user, myCand.sub, true)}
+                {!source && <div className="menu-title">전체 사용자</div>}
+              </>}
               {source && <>
                 <div className="menu-title">{source.name}</div>
                 {src == null && <div className="menu-empty">불러오는 중…</div>}
@@ -391,7 +429,7 @@ export function PeopleEditor({ col, value, onSave, options = [], users = [], com
                 <div className="menu-title">등록된 사용자</div>
               </>}
               {shown.map((c) => row(`${c.name}|${c.sub}`, c.name, c.user, c.sub))}
-              {shown.length === 0 && <div className="menu-empty">결과가 없습니다.</div>}
+              {shown.length === 0 && !showMe && <div className="menu-empty">결과가 없습니다.</div>}
             </div>
             {canAdd && <>
               <div className="menu-sep" />

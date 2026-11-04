@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -21,6 +22,7 @@ import static com.inticube.teamboard.dao.Rows.*;
 @RequiredArgsConstructor
 @Transactional
 public class BoardService {
+
     private final BoardDao boardDao;
     private final BoardPartsDao partsDao;
     private final ItemDao itemDao;
@@ -33,6 +35,7 @@ public class BoardService {
     private final RelationService relations;
     private final AccessGuard guard;
     private final WsGroupService wsGroups;
+    private final AuditService audit;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     @org.springframework.context.annotation.Lazy
     @org.springframework.beans.factory.annotation.Autowired
@@ -40,7 +43,7 @@ public class BoardService {
 
     private static final String[][] DEFAULT_STATUSES = {
             {"대기", "#A7AEB8", "false"},
-            {"진행중", "#0061F2", "false"},
+            {"처리중", "#0061F2", "false"},
             {"막힘", "#E81500", "false"},
             {"완료", "#00AC69", "true"},
     };
@@ -124,6 +127,7 @@ public class BoardService {
         insertMember(b.getId(), me.id(), "OWNER");
         insertDefaultTypes(b);
         insertDefaultViews(b.getId());
+        audit.record("BOARD_CREATE", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(), b.isPublic() ? "공개" : "멤버 전용");
         return new BoardSummary(b.getId(), b.getName(), b.getDescription(), me.name(), 0, 0, b.isPublic(), 1, "OWNER", false, true, groupId);
     }
 
@@ -321,10 +325,15 @@ public class BoardService {
     public void updateBoard(Long id, BoardRequest req, UserPrincipal me) {
         Board b = getBoard(id);
         checkOwner(b, me);
+        List<String> ch = new ArrayList<>();
+        if (!Objects.equals(b.getName(), req.name().trim())) ch.add("이름: " + b.getName() + " → " + req.name().trim());
+        if (!Objects.equals(nz(b.getDescription()), nz(req.description()))) ch.add("설명 수정");
+        if (req.isPublic() != null && req.isPublic() != b.isPublic()) ch.add("공개 범위: " + (b.isPublic() ? "공개" : "멤버 전용") + " → " + (req.isPublic() ? "공개" : "멤버 전용"));
         b.setName(req.name().trim());
         b.setDescription(req.description());
         if (req.isPublic() != null) b.setPublicBoard(req.isPublic());
         boardDao.update(b);
+        if (!ch.isEmpty()) audit.record("BOARD_UPDATE", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(), String.join(" · ", ch));
     }
 
     /** 키 접두어·SLA 영업시간 설정 */
@@ -446,6 +455,8 @@ public class BoardService {
     public List<BoardMemberDto> setMembers(Long boardId, BoardMembersRequest req, UserPrincipal me) {
         Board b = getBoard(boardId);
         checkOwner(b, me);
+        List<String> ch = new ArrayList<>();
+        if (req.isPublic() != null && req.isPublic() != b.isPublic()) ch.add("공개 범위: " + (b.isPublic() ? "공개" : "멤버 전용") + " → " + (req.isPublic() ? "공개" : "멤버 전용"));
         if (req.isPublic() != null) { b.setPublicBoard(req.isPublic()); boardDao.update(b); }
         List<BoardMemberItem> list = req.members() == null ? List.of() : req.members();
         Map<Long, BoardMember> cur = partsDao.selectMembersByBoard(boardId).stream()
@@ -455,13 +466,16 @@ public class BoardService {
             if (m.userId() == null || !keep.add(m.userId())) continue;
             String role = "OWNER".equals(m.role()) ? "OWNER" : "MEMBER";
             BoardMember bm = cur.get(m.userId());
-            if (bm != null) { if (!role.equals(bm.getRole())) partsDao.updateMemberRole(bm.getId(), role); }
-            else {
+            if (bm != null) {
+                if (!role.equals(bm.getRole())) { partsDao.updateMemberRole(bm.getId(), role); ch.add(userName(m.userId()) + " 역할 " + roleKo(bm.getRole()) + " → " + roleKo(role)); }
+            } else {
                 if (userDao.selectById(m.userId()) == null) throw ApiException.notFound("사용자");
                 insertMember(boardId, m.userId(), role);
+                ch.add(userName(m.userId()) + " 추가(" + roleKo(role) + ")");
             }
         }
-        cur.forEach((uid, m) -> { if (!keep.contains(uid)) partsDao.deleteMember(m.getId()); });
+        cur.forEach((uid, m) -> { if (!keep.contains(uid)) { partsDao.deleteMember(m.getId()); ch.add(userName(uid) + " 제외"); } });
+        if (!ch.isEmpty()) audit.record("BOARD_MEMBERS", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(), String.join(" · ", ch));
         return getMembers(boardId);
     }
 
@@ -519,7 +533,16 @@ public class BoardService {
     public void setColumnConfig(Long boardId, String config, UserPrincipal me) {
         Board b = getBoard(boardId);
         checkOwner(b, me);
-        b.setColumnConfig(config == null || config.isBlank() ? null : validJson(config));
+        String next = config == null || config.isBlank() ? null : validJson(config);
+        // SR 통제 규칙은 전용 API 로만 바꾼다: 컬럼 설정 저장 시 기존 값을 그대로 유지
+        try {
+            var old = b.getColumnConfig() == null || b.getColumnConfig().isBlank() ? null : json.readTree(b.getColumnConfig()).get(SrPolicyService.KEY);
+            var root = next == null ? json.createObjectNode() : (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(next);
+            root.remove(SrPolicyService.KEY);
+            if (old != null) root.set(SrPolicyService.KEY, old);
+            next = root.isEmpty() ? null : json.writeValueAsString(root);
+        } catch (Exception e) { throw ApiException.bad("컬럼 설정 형식이 올바르지 않습니다."); }
+        b.setColumnConfig(next);
         boardDao.update(b);
     }
 
@@ -562,7 +585,12 @@ public class BoardService {
             b.setColumnConfig(root.isEmpty() ? null : json.writeValueAsString(root));
         } catch (Exception e) { throw ApiException.bad("워크스페이스 설정을 읽을 수 없습니다."); }
         boardDao.update(b);
+        audit.record("BOARD_UPDATE", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(), "자동화 규칙 저장 (" + in.size() + "개)");
     }
+
+    private static String nz(String s) { return s == null ? "" : s; }
+    private static String roleKo(String r) { return "OWNER".equals(r) ? "관리자" : "멤버"; }
+    private String userName(Long id) { AppUser u = userDao.selectById(id); return u == null ? "#" + id : u.getName(); }
 
     private String validJson(String s) {
         if (s.isBlank()) return null;
@@ -572,7 +600,9 @@ public class BoardService {
     public void deleteBoard(Long id, UserPrincipal me) {
         Board b = getBoard(id);
         checkOwner(b, me);
-        deleteItems(itemDao.selectByBoard(id));
+        List<Item> allItems = itemDao.selectByBoardAll(id);
+        audit.record("BOARD_DELETE", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(), "워크스페이스 삭제 (휴지통 포함 업무 " + allItems.size() + "건 영구 삭제)");
+        deleteItems(allItems);
         partsDao.deleteColumnsByBoard(id);
         partsDao.deleteGroupsByBoard(id);
         partsDao.deleteStatusesByBoard(id);
@@ -588,6 +618,48 @@ public class BoardService {
     }
 
     /** 아이템과 그 하위 데이터(댓글/첨부/알림/값/관계/감시/시간) 일괄 삭제 */
+    /**
+     * 휴지통으로 이동 (소프트 삭제). 하위 업무도 같은 시각으로 함께 표시하고, 삭제자·사유·시각을 남긴다.
+     * 업무·댓글·첨부·활동 기록은 그대로 남아 관리자가 복원할 수 있다. 권한 확인은 호출하는 쪽에서
+     */
+    public int softDeleteItems(List<Item> roots, String reason) {
+        if (roots.isEmpty()) return 0;
+        Map<Long, Item> all = new LinkedHashMap<>();
+        roots.forEach(i -> all.put(i.getId(), i));
+        List<Long> frontier = new ArrayList<>(all.keySet());
+        while (!frontier.isEmpty()) {
+            List<Item> kids = itemDao.selectByParents(frontier);
+            frontier = new ArrayList<>();
+            for (Item k : kids) if (k.getDeletedAt() == null && all.putIfAbsent(k.getId(), k) == null) frontier.add(k.getId());
+        }
+        UserPrincipal me = AuditService.currentUser();
+        LocalDateTime now = LocalDateTime.now().withNano(0);
+        String why = reason == null || reason.isBlank() ? "(사유 없음)" : reason.trim();
+        int n = itemDao.updateSoftDelete(all.keySet(), me == null ? null : me.id(), why, now);
+        AppUser actor = me == null ? null : userDao.selectById(me.id());
+        for (Item i : roots) {
+            int kids = (int) all.values().stream().filter(k -> k != i && isUnder(k, i, all)).count();
+            ItemUpdate log = new ItemUpdate();
+            log.setItem(i); log.setAuthor(actor); log.setSystem(true);
+            log.setContent("휴지통으로 이동: " + why + (kids > 0 ? " (하위 업무 " + kids + "건 포함)" : ""));
+            extraDao.insertUpdate(log);
+            Board ib = i.getBoard() != null && i.getBoard().getName() == null ? boardDao.selectById(i.getBoard().getId()) : i.getBoard();
+            audit.record("ITEM_DELETE", ib == null ? null : ib.getId(), ib == null ? null : ib.getName(), "ITEM", i.getId(), i.getName(),
+                    "휴지통으로 이동 · 사유: " + why + (kids > 0 ? " (하위 업무 " + kids + "건 포함)" : ""));
+        }
+        return n;
+    }
+
+    private static boolean isUnder(Item k, Item root, Map<Long, Item> all) {
+        Item cur = k;
+        for (int d = 0; d < 10 && cur != null && cur.getParent() != null; d++) {
+            if (cur.getParent().getId().equals(root.getId())) return true;
+            cur = all.get(cur.getParent().getId());
+        }
+        return false;
+    }
+
+    /** 영구 삭제 (하위 업무·댓글·첨부·값 모두). 일반 삭제는 softDeleteItems — 휴지통 */
     void deleteItems(List<Item> list) {
         if (list.isEmpty()) return;
         // 하위 업무도 함께 (여러 단계)
@@ -600,6 +672,14 @@ public class BoardService {
             for (Item k : kids) if (all.putIfAbsent(k.getId(), k) == null) frontier.add(k.getId());
         }
         List<Long> ids = new ArrayList<>(all.keySet());
+        // 영구 삭제하면 활동 기록도 함께 지워지므로, 삭제 사실은 감사 로그에 남긴다
+        for (Item i : list) {
+            Board ib = i.getBoard() != null && i.getBoard().getName() == null ? boardDao.selectById(i.getBoard().getId()) : i.getBoard();
+            audit.record("ITEM_PURGE", ib == null ? null : ib.getId(), ib == null ? null : ib.getName(), "ITEM", i.getId(), i.getName(),
+                    "업무 영구 삭제" + (all.size() > list.size() && list.size() == 1 ? " (하위 업무 " + (all.size() - 1) + "건 포함)" : ""));
+        }
+        if (all.size() > list.size() && list.size() > 1)
+            audit.record("ITEM_PURGE", null, null, "ITEM", null, null, "하위 업무 포함 총 " + all.size() + "건 영구 삭제: " + ids);
         itemDao.deleteValuesByItems(ids);
         extraDao.deleteLinksByItems(ids);
         extraDao.deleteWatchersByItems(ids);
@@ -644,6 +724,8 @@ public class BoardService {
             itemDao.updateClearStatus(removed);
             partsDao.deleteStatuses(removed);
         }
+        audit.record("BOARD_UPDATE", b.getId(), b.getName(), "BOARD", b.getId(), b.getName(),
+                "상태 설정 저장: " + reqs.stream().map(StatusRequest::label).collect(Collectors.joining(", ")));
         return partsDao.selectStatusesByBoard(boardId).stream().map(StatusDto::of).toList();
     }
 
@@ -668,13 +750,26 @@ public class BoardService {
         return GroupDto.of(g);
     }
 
-    public void deleteGroup(Long groupId) {
+    /**
+     * 그룹 삭제: 안의 업무는 휴지통으로. 일반 멤버는 남이 등록한 업무가 든 그룹을 지울 수 없다(403).
+     * 이미 휴지통에 있던 이 그룹의 업무는 남은 첫 그룹으로 옮겨 복원할 수 있게 둔다
+     */
+    public void deleteGroup(Long groupId, String reason) {
         BoardGroup g = partsDao.selectGroupById(groupId);
         if (g == null) throw ApiException.notFound("그룹");
-        if (partsDao.selectGroupsByBoard(g.getBoard().getId()).size() <= 1)
-            throw ApiException.bad("보드에는 최소 1개의 그룹이 필요합니다.");
-        deleteItems(itemDao.selectByGroup(groupId));
+        List<BoardGroup> groups = partsDao.selectGroupsByBoard(g.getBoard().getId());
+        if (groups.size() <= 1) throw ApiException.bad("보드에는 최소 1개의 그룹이 필요합니다.");
+        List<Item> items = itemDao.selectByGroup(groupId);
+        for (Item i : items) guard.setRemoveItemChecked(i, "삭제할");
+        if (!items.isEmpty() && (reason == null || reason.isBlank())) throw ApiException.bad("업무가 든 그룹을 지우려면 삭제 사유를 입력하세요.");
+        List<Item> roots = items.stream().filter(i -> i.getParent() == null).toList();
+        softDeleteItems(roots.isEmpty() ? items : roots, "그룹 '" + g.getName() + "' 삭제" + (reason == null || reason.isBlank() ? "" : " · " + reason.trim()));
+        BoardGroup fallback = groups.stream().filter(x -> !x.getId().equals(groupId)).findFirst().orElseThrow();
+        itemDao.updateGroupOfTrashed(groupId, fallback.getId());
         partsDao.deleteGroup(groupId);
+        Board b = getBoard(g.getBoard().getId());
+        audit.record("BOARD_UPDATE", b.getId(), b.getName(), "GROUP", groupId, g.getName(),
+                "그룹 삭제 (업무 " + items.size() + "건 휴지통 이동)" + (reason == null || reason.isBlank() ? "" : " · 사유: " + reason.trim()));
     }
 
     public void setGroupOrder(Long boardId, List<Long> ids) {
@@ -699,6 +794,7 @@ public class BoardService {
         checkRelation(c);
         c.setSortOrder(partsDao.selectColumnMaxSort(boardId) + 1);
         partsDao.insertColumn(c);
+        audit.record("BOARD_UPDATE", b.getId(), b.getName(), "COLUMN", c.getId(), c.getName(), "컬럼 추가 (" + c.getType() + ")");
         return ColumnDto.of(c);
     }
 
@@ -726,6 +822,8 @@ public class BoardService {
         BoardColumn c = partsDao.selectColumnById(columnId);
         if (c == null) throw ApiException.notFound("컬럼");
         checkOwner(c.getBoard(), me);
+        Board cb = getBoard(c.getBoard().getId());
+        audit.record("BOARD_UPDATE", cb.getId(), cb.getName(), "COLUMN", c.getId(), c.getName(), "컬럼 삭제 (값 함께 삭제)");
         itemDao.deleteValuesByColumn(columnId);
         partsDao.deleteColumn(columnId);
     }

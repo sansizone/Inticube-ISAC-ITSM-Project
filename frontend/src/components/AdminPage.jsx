@@ -2,21 +2,31 @@ import React, { useState } from 'react'
 import { PageHeader, useApp } from '../App.jsx'
 import { api } from '../api.js'
 import { AdminUsers } from './AdminUsers.jsx'
+import { AuditLogs } from './AuditLogs.jsx'
+import { TrashAdmin } from './TrashAdmin.jsx'
 import { Modal, useToast, useConfirm, Empty } from './common.jsx'
 import { Icon } from './icons.jsx'
 import { categoryIcon } from './Sidebar.jsx'
 
 export default function AdminPage({ tab }) {
+  const t = ['boards', 'audit', 'trash'].includes(tab) ? tab : 'users'
+  const meta = {
+    users: ['사용자 관리', 'users', '계정 발급, 권한, 비밀번호 초기화를 관리합니다.'],
+    boards: ['게시판 관리', 'doc', '게시판을 추가하고 순서와 글쓰기 권한을 정합니다.'],
+    trash: ['휴지통', 'trash', '삭제된 업무를 확인하고 복원하거나 영구 삭제합니다. 삭제자·사유·시각이 함께 표시됩니다.'],
+    audit: ['감사 로그', 'shield', '업무·권한·설정 변경과 삭제, 개인정보 열람, 로그인 기록을 조회합니다. 기록은 수정·삭제할 수 없습니다.'],
+  }[t]
   return (
     <>
-      <PageHeader crumbs={[{ label: '관리자 설정' }]} title={tab === 'boards' ? '게시판 관리' : '사용자 관리'} icon={tab === 'boards' ? 'doc' : 'users'}
-        subtitle={tab === 'boards' ? '게시판을 추가하고 순서와 글쓰기 권한을 정합니다.' : '계정 발급, 권한, 비밀번호 초기화를 관리합니다.'} />
+      <PageHeader crumbs={[{ label: '관리자 설정' }]} title={meta[0]} icon={meta[1]} subtitle={meta[2]} />
       <div className="page"><div className="card">
         <div className="card-header page-tabs">
-          <a href="#/admin" className={tab !== 'boards' ? 'active' : ''}><Icon name="users" size={14} /> 사용자</a>
-          <a href="#/admin/boards" className={tab === 'boards' ? 'active' : ''}><Icon name="doc" size={14} /> 게시판</a>
+          <a href="#/admin" className={t === 'users' ? 'active' : ''}><Icon name="users" size={14} /> 사용자</a>
+          <a href="#/admin/boards" className={t === 'boards' ? 'active' : ''}><Icon name="doc" size={14} /> 게시판</a>
+          <a href="#/admin/trash" className={t === 'trash' ? 'active' : ''}><Icon name="trash" size={14} /> 휴지통</a>
+          <a href="#/admin/audit" className={t === 'audit' ? 'active' : ''}><Icon name="shield" size={14} /> 감사 로그</a>
         </div>
-        <div className="card-body">{tab === 'boards' ? <CategoryAdmin /> : <AdminUsers />}</div>
+        <div className="card-body">{t === 'boards' ? <CategoryAdmin /> : t === 'audit' ? <AuditLogs /> : t === 'trash' ? <TrashAdmin /> : <AdminUsers />}</div>
       </div></div>
     </>
   )

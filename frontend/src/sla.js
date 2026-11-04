@@ -80,8 +80,11 @@ function fmt(d) {
 export const RECUR_OPTIONS = [
   ['', '반복 없음'], ['DAILY:1', '매일'], ['WEEKLY:1', '매주'], ['WEEKLY:2', '2주마다'], ['MONTHLY:1', '매월'], ['MONTHLY:3', '분기마다'], ['MONTHLY:6', '반기마다'], ['YEARLY:1', '매년'],
 ]
+/** "MONTHLY:1:31" → "MONTHLY:1" (세 번째 값은 서버가 쓰는 월말 기준일) */
+export const recurBase = (rule) => (rule ? rule.split(':').slice(0, 2).join(':') : '')
 export function recurLabel(rule) {
   if (!rule) return ''
+  rule = recurBase(rule)
   const hit = RECUR_OPTIONS.find(([k]) => k === rule)
   if (hit) return hit[1]
   const [u, n] = rule.split(':')

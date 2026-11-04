@@ -26,6 +26,7 @@ public class UserService {
     private final PasswordEncoder encoder;
     private final TotpService totp;
     private final WsGroupService wsGroups;
+    private final AuditService audit;
 
     public AppUser getUser(Long id) {
         AppUser u = userDao.selectById(id);
@@ -49,6 +50,7 @@ public class UserService {
         u.setPasswordHash(encoder.encode(next));
         u.setMustChangePassword(false);
         userDao.update(u);
+        audit.recordAs(u.getId(), u.getName(), "USER_PW_CHANGE", null, null, "USER", u.getId(), u.getName(), "본인 비밀번호 변경");
         return u;
     }
 
@@ -79,11 +81,13 @@ public class UserService {
         u.setMustChangePassword(true);
         userDao.insert(u);
         wsGroups.insertUserToDefault(u.getId()); // 새 계정은 첫 워크스페이스 그룹 멤버로
+        audit.record("USER_CREATE", null, null, "USER", u.getId(), u.getName(), "아이디 " + username + ", 권한 " + u.getRole());
         return new TempPasswordResponse(username, temp);
     }
 
     public UserAdminDto updateUser(Long id, UserUpdateRequest req, UserPrincipal me) {
         AppUser u = getUser(id);
+        String auditUsername = u.getUsername();
         boolean demoting = req.role() != null && req.role() != Role.ADMIN && u.getRole() == Role.ADMIN;
         boolean deactivating = Boolean.FALSE.equals(req.active()) && u.isActive();
         if (u.getId().equals(me.id()) && (demoting || deactivating))
@@ -98,11 +102,19 @@ public class UserService {
                 throw new ApiException(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다.");
             u.setUsername(username);
         }
+        List<String> ch = new ArrayList<>();
+        if (!java.util.Objects.equals(u.getName(), req.name().trim())) ch.add("이름: " + u.getName() + " → " + req.name().trim());
+        if (!java.util.Objects.equals(u.getDepartment(), req.department())) ch.add("부서: " + (u.getDepartment() == null ? "없음" : u.getDepartment()) + " → " + (req.department() == null ? "없음" : req.department()));
+        if (req.role() != null && req.role() != u.getRole()) ch.add("권한: " + u.getRole() + " → " + req.role());
+        if (req.active() != null && req.active() != u.isActive()) ch.add(req.active() ? "활성화" : "비활성화");
+        String oldUsername = auditUsername;
         u.setName(req.name().trim());
         u.setDepartment(req.department());
         if (req.role() != null) u.setRole(req.role());
         if (req.active() != null) u.setActive(req.active());
         userDao.update(u);
+        if (oldUsername != null && !oldUsername.equals(u.getUsername())) ch.add(0, "아이디: " + oldUsername + " → " + u.getUsername());
+        if (!ch.isEmpty()) audit.record("USER_UPDATE", null, null, "USER", u.getId(), u.getName(), String.join(" · ", ch));
         return UserAdminDto.of(u);
     }
 
@@ -129,6 +141,7 @@ public class UserService {
             u.setMustChangePassword(true);
             u.setActive(true);
             userDao.update(u);
+            audit.record("USER_UPDATE", null, null, "USER", u.getId(), u.getName(), "일괄 활성화 (아이디 " + username + ", 임시 비밀번호 발급)");
             out.add(new BulkActivateResult(u.getId(), u.getName(), username, temp));
         }
         return out;
@@ -140,6 +153,7 @@ public class UserService {
         u.setPasswordHash(encoder.encode(temp));
         u.setMustChangePassword(true);
         userDao.update(u);
+        audit.record("USER_PW_RESET", null, null, "USER", u.getId(), u.getName(), "임시 비밀번호 발급");
         return new TempPasswordResponse(u.getUsername(), temp);
     }
 

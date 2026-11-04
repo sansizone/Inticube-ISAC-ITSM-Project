@@ -12,9 +12,20 @@ import java.util.Map;
 
 @Mapper
 public interface ItemDao {
+    Long lockById(@Param("id") Long id);
+    int updateTouch(@Param("id") Long id, @Param("at") java.time.LocalDateTime at, @Param("respondedAt") java.time.LocalDateTime respondedAt);
     Item selectById(@Param("id") Long id);
     List<Item> selectByIds(@Param("ids") Collection<Long> ids);
     List<Item> selectByBoard(@Param("boardId") Long boardId);
+    /** 휴지통 포함 전체 (워크스페이스 삭제용) */
+    List<Item> selectByBoardAll(@Param("boardId") Long boardId);
+
+    // ---------- 휴지통 ----------
+    int updateSoftDelete(@Param("ids") Collection<Long> ids, @Param("by") Long by, @Param("reason") String reason, @Param("at") java.time.LocalDateTime at);
+    int updateRestore(@Param("ids") Collection<Long> ids, @Param("at") java.time.LocalDateTime at);
+    int updateGroupOfTrashed(@Param("fromGroupId") Long fromGroupId, @Param("toGroupId") Long toGroupId);
+    List<java.util.Map<String, Object>> selectTrash(@Param("boardId") Long boardId, @Param("q") String q, @Param("offset") int offset, @Param("limit") int limit);
+    long selectTrashCount(@Param("boardId") Long boardId, @Param("q") String q);
     List<Item> selectByGroup(@Param("groupId") Long groupId);
     List<Item> selectByParent(@Param("parentId") Long parentId);
     List<Item> selectByParents(@Param("ids") Collection<Long> ids);
