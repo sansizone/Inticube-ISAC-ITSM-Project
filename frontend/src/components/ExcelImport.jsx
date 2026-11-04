@@ -3,11 +3,13 @@ import { api } from '../api.js'
 import { Modal, useToast, Popover, usePopover } from './common.jsx'
 import { Icon } from './icons.jsx'
 import { friendlyDate } from '../util.js'
+import { useApp } from '../App.jsx'
 
 /** 보드 헤더의 엑셀 메뉴 */
 export function ExcelMenu({ board, onImported }) {
   const pop = usePopover()
   const [importing, setImporting] = useState(false)
+  const isAdmin = useApp()?.me?.role === 'ADMIN'  // 가져오기는 시스템 관리자만 (서버도 막음)
   return (
     <>
       <button className="btn btn-white btn-sm" onClick={pop.open} title="엑셀 내보내기/가져오기"><Icon name="sheet" size={14} /> 엑셀</button>
@@ -20,10 +22,12 @@ export function ExcelMenu({ board, onImported }) {
             <a className="menu-row" href={`/api/boards/${board.id}/excel`} onClick={pop.close}>
               <Icon name="download" size={14} /><span className="grow">현재 업무 내보내기</span><span className="menu-meta">{board.items.length}건</span>
             </a>
-            <div className="menu-sep" />
-            <button className="menu-row" onClick={() => { pop.close(); setImporting(true) }}>
-              <Icon name="upload" size={14} /><span className="grow">엑셀 가져오기…</span>
-            </button>
+            {isAdmin && <>
+              <div className="menu-sep" />
+              <button className="menu-row" onClick={() => { pop.close(); setImporting(true) }}>
+                <Icon name="upload" size={14} /><span className="grow">엑셀 가져오기…</span><span className="menu-meta">관리자</span>
+              </button>
+            </>}
           </div>
         </Popover>
       )}

@@ -258,7 +258,7 @@ export default function MondayImport() {
                       </span>
                     ))}
                   </div>
-                  <p className="hint" style={{ marginBottom: 0 }}>같은 의미의 기본 상태(완료·진행중·막힘·대기)는 그대로 쓰고, 나머지 라벨은 원래 이름 그대로 새 상태로 추가됩니다.</p>
+                  <p className="hint" style={{ marginBottom: 0 }}>같은 의미의 기본 상태(완료·처리중·막힘·대기)는 그대로 쓰고, 나머지 라벨은 원래 이름 그대로 새 상태로 추가됩니다.</p>
                 </div>
               </div>
             )}

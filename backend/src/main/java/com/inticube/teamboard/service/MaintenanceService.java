@@ -31,6 +31,7 @@ public class MaintenanceService {
     private final NotificationDao notiDao;
     private final NotificationService notifier;
     private final AccessGuard guard;
+    private final SrPolicyService srPolicy;
 
     private Item item(Long id) {
         Item i = itemDao.selectById(id);
@@ -147,11 +148,13 @@ public class MaintenanceService {
         t.setUser(actor);
         t.setWorkDate(req.workDate() == null ? LocalDate.now() : req.workDate());
         t.setHours(req.hours().setScale(2, java.math.RoundingMode.HALF_UP));
+        srPolicy.checkTimeEntry(i, actor.getId(), t.getWorkDate(), t.getHours());
         t.setComment(req.comment() == null || req.comment().isBlank() ? null : req.comment().trim());
         extraDao.insertTime(t);
         i.setUpdatedAt(LocalDateTime.now());
-        itemDao.update(i);
-        insertLog(i, actor, "시간 기록: " + t.getHours().stripTrailingZeros().toPlainString() + "h" + (t.getComment() == null ? "" : " — " + t.getComment()));
+        itemDao.updateTouch(i.getId(), i.getUpdatedAt(), null);  // 전체 행을 덮어쓰지 않음
+        insertLog(i, actor, "시간 기록: " + t.getWorkDate() + " " + t.getHours().stripTrailingZeros().toPlainString() + "h" + (t.getComment() == null ? "" : " — " + t.getComment()));
+        srPolicy.syncWorkHours(i);
         return TimeEntryDto.of(extraDao.selectTimeById(t.getId()));
     }
 
@@ -160,7 +163,14 @@ public class MaintenanceService {
         if (t == null) throw ApiException.notFound("시간 기록");
         guard.getItemChecked(t.getItemId());
         if (!me.isAdmin() && !t.getUser().getId().equals(me.id())) throw new ApiException(HttpStatus.FORBIDDEN, "본인 기록만 삭제할 수 있습니다.");
-        extraDao.deleteTime(t.getId());
+        if (t.getDeletedAt() != null) return;
+        Item i = item(t.getItemId());
+        srPolicy.checkNotLocked(i, "시간 기록");
+        // 논리 삭제: 기록은 보존, 합계에서만 빠짐
+        extraDao.updateTimeDeleted(t.getId(), me.id(), LocalDateTime.now());
+        insertLog(i, userDao.selectById(me.id()), "시간 기록 삭제: " + t.getWorkDate() + " " + t.getHours().stripTrailingZeros().toPlainString() + "h ("
+                + (t.getUser() == null ? "-" : t.getUser().getName()) + ", 기록 보존)");
+        srPolicy.syncWorkHours(i);
     }
 
     // ---------- 위키 ----------

@@ -55,4 +55,15 @@ public interface ItemExtraDao {
     int updateTimeBoard(@Param("boardId") Long boardId, @Param("ids") Collection<Long> ids);
     int deleteTime(@Param("id") Long id);
     int deleteTimesByItems(@Param("ids") Collection<Long> ids);
+
+    // ---------- 보존·논리 삭제 (v3.6) ----------
+    int updateUpdateDeleted(@Param("id") Long id, @Param("by") Long by, @Param("at") java.time.LocalDateTime at);
+    int insertUpdateRev(@Param("updateId") Long updateId, @Param("content") String content, @Param("by") Long by, @Param("at") java.time.LocalDateTime at);
+    List<java.util.Map<String, Object>> selectUpdateRevs(@Param("updateId") Long updateId);
+    int updateAttachmentDeleted(@Param("id") Long id, @Param("by") Long by, @Param("at") java.time.LocalDateTime at);
+    int updateTimeDeleted(@Param("id") Long id, @Param("by") Long by, @Param("at") java.time.LocalDateTime at);
+    List<java.util.Map<String, Object>> selectAttachmentsByHash(@Param("boardId") Long boardId, @Param("hash") String hash);
+    java.math.BigDecimal selectTimeSumByUserDate(@Param("userId") Long userId, @Param("date") java.time.LocalDate date);
+    java.math.BigDecimal selectTimeSumByItem(@Param("itemId") Long itemId);
+    long selectTimeCountAllByItem(@Param("itemId") Long itemId);
 }

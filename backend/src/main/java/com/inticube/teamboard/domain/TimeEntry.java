@@ -25,4 +25,7 @@ public class TimeEntry {
     private String comment;
 
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    /** 논리 삭제 */
+    private LocalDateTime deletedAt;
 }

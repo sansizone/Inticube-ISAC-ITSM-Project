@@ -13,7 +13,7 @@ const TYPE_ICONS = ['inbox', 'alert', 'edit', 'chat', 'repeat', 'wrench', 'bolt'
 
 export default function BoardSettings({ board, onClose, onSaved, onDeleted, onColumnsChanged, initialTab }) {
   const can = board.canManage
-  const [tab, setTab] = useState(!can ? 'members' : ['columns', 'members', 'types', 'automations'].includes(initialTab) ? initialTab : 'general')
+  const [tab, setTab] = useState(!can ? 'members' : ['columns', 'members', 'types', 'automations', 'sr'].includes(initialTab) ? initialTab : 'general')
   const [keyPrefix, setKeyPrefix] = useState(board.keyPrefix || '')
   const [slaBusiness, setSlaBusiness] = useState(!!board.slaBusinessHours)
   const [showProgress, setShowProgress] = useState(columnConfig(board).showProgress)
@@ -65,11 +65,13 @@ export default function BoardSettings({ board, onClose, onSaved, onDeleted, onCo
         {can && <button className={tab === 'types' ? 'active' : ''} onClick={() => setTab('types')}>유형</button>}
         {can && <button className={tab === 'columns' ? 'active' : ''} onClick={() => setTab('columns')}>컬럼</button>}
         {can && <button className={tab === 'automations' ? 'active' : ''} onClick={() => setTab('automations')}>자동화</button>}
+        {can && <button className={tab === 'sr' ? 'active' : ''} onClick={() => setTab('sr')}>SR 통제</button>}
         <button className={tab === 'members' ? 'active' : ''} onClick={() => setTab('members')}>멤버·공개</button>
       </div>
       {tab === 'columns' && <ColumnSettings board={board} onChanged={onColumnsChanged || onSaved} confirm={confirm} toast={toast} />}
       {tab === 'members' && <MembersEditor board={board} onSaved={onSaved} />}
       {tab === 'automations' && <AutomationSettings board={board} toast={toast} onSaved={onSaved} />}
+      {tab === 'sr' && <SrSettings board={board} toast={toast} confirm={confirm} onSaved={onColumnsChanged || onSaved} />}
       {tab === 'types' && <TypeSettings board={board} toast={toast} confirm={confirm} onSaved={onSaved} />}
       {tab === 'general' && <>
       <label className="field"><span>워크스페이스 이름</span><input className="input" value={name} maxLength={100} onChange={(e) => setName(e.target.value)} /></label>
@@ -519,6 +521,81 @@ function BoardGroupField({ board, toast }) {
         }} />
       </div>
       <p className="hint" style={{ margin: '4px 0 0' }}>{can ? '옮기면 새 그룹의 멤버만 이 워크스페이스를 볼 수 있습니다. (바로 저장됨)' : '그룹 관리자만 다른 그룹으로 옮길 수 있습니다.'}</p>
+    </div>
+  )
+}
+
+const SR_COLS = [
+  ['receivedAtCol', '접수일시', '요청이 실제로 들어온 시각. 처리 시작 전 필수, 미래 불가'],
+  ['delayCol', '등록 지연 (H)', '등록 시각 − 접수일시 (자동)'],
+  ['completedAtCol', '처리완료일', '완료로 바꾸는 순간 서버 시각으로 자동 기록'],
+  ['agreedCol', '합의완료일', '이미 있는 값을 바꾸려면 변경 사유 필수'],
+  ['firstAgreedCol', '최초 합의완료일', '처음 정한 합의일 보존 (자동)'],
+  ['gradeCol', '장애등급', '영향도 × 긴급도로 자동 산출'],
+  ['impactCol', '영향도', '상 / 중 / 하'],
+  ['urgencyCol', '긴급도', '상 / 중 / 하'],
+  ['workHoursCol', '작업시간 (H)', '시간 기록 합계 (자동)'],
+]
+
+/** SR 통제 규칙: 완료 잠금, 자동 기록 컬럼, 완료 조건, 시간 기록 상한 */
+function SrSettings({ board, toast, confirm, onSaved }) {
+  const [p, setP] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const cols = columnsFor(board, 'ITEM')
+  const load = () => api.get(`/api/boards/${board.id}/sr-policy`).then((x) => setP(x || { enabled: false, lockDone: true, requireEvidence: true, required: [], gradeType: '장애', maxEntryHours: 12, maxDayHours: 16 })).catch((e) => toast(e.message, 'error'))
+  useEffect(() => { load() }, [board.id]) // eslint-disable-line
+  if (!p) return <p className="muted">불러오는 중…</p>
+  const set = (k, v) => setP({ ...p, [k]: v })
+  const req = new Set(p.required || [])
+  const toggleReq = (k) => { const n = new Set(req); n.has(k) ? n.delete(k) : n.add(k); set('required', [...n]) }
+  const save = async (body) => {
+    setBusy(true)
+    try { const x = await api.put(`/api/boards/${board.id}/sr-policy`, body || p); setP(x || { ...p, enabled: false }); toast('SR 통제 규칙을 저장했습니다.', 'success'); onSaved && onSaved() }
+    catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
+  }
+  const defaults = async () => {
+    if (!(await confirm('이름으로 컬럼을 찾아 연결하고, 없는 컬럼(접수일시·등록 지연·최초 합의완료일·영향도·긴급도·처리내역)은 새로 만듭니다.\n규칙도 바로 켜집니다. 진행할까요?', { danger: false, okText: '기본값 적용' }))) return
+    setBusy(true)
+    try { setP(await api.post(`/api/boards/${board.id}/sr-policy/defaults`)); toast('기본값을 적용했습니다.', 'success'); onSaved && onSaved() }
+    catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="sr-settings">
+      <p className="hint">요청(SR) 처리 기록을 사후에 고칠 수 없도록 통제합니다. 켜면 완료된 SR은 '재개(사유 필수)' 외에는 수정할 수 없고, 처리완료일·장애등급·작업시간 등은 서버가 자동으로 기록합니다.</p>
+      <div className="row gap" style={{ margin: '0.5rem 0 1rem' }}>
+        <label className="check"><input type="checkbox" checked={!!p.enabled} onChange={(e) => set('enabled', e.target.checked)} /> 규칙 사용</label>
+        <span className="grow" />
+        <button className="btn btn-sm" disabled={busy} onClick={defaults}>기본값 자동 설정</button>
+      </div>
+      <div className="sr-grid">
+        {SR_COLS.map(([k, label, help]) => (
+          <React.Fragment key={k}>
+            <span title={help}>{label}</span>
+            <select className="input input-sm" value={p[k] || ''} title={help} onChange={(e) => set(k, Number(e.target.value) || null)}>
+              <option value="">사용 안 함</option>
+              {cols.map((c) => <option key={c.id} value={c.id}>{c.name} ({TYPE_LABEL[c.type] || c.type})</option>)}
+            </select>
+          </React.Fragment>
+        ))}
+        <span>장애등급 대상 유형</span>
+        <input className="input input-sm" value={p.gradeType || ''} placeholder="예: 장애 (비우면 모든 유형)" onChange={(e) => set('gradeType', e.target.value)} />
+        <span>시간 기록 1건 상한 (H)</span>
+        <input className="input input-sm" inputMode="decimal" value={p.maxEntryHours ?? ''} onChange={(e) => set('maxEntryHours', e.target.value)} />
+        <span>1인 1일 상한 (H)</span>
+        <input className="input input-sm" inputMode="decimal" value={p.maxDayHours ?? ''} onChange={(e) => set('maxDayHours', e.target.value)} />
+      </div>
+      <h4 style={{ margin: '1.25rem 0 0.5rem' }}>완료 조건</h4>
+      <div className="sr-req">
+        <label className="check"><input type="checkbox" checked={!!p.lockDone} onChange={(e) => set('lockDone', e.target.checked)} /> 완료 SR 잠금</label>
+        <label className="check"><input type="checkbox" checked={!!p.requireEvidence} onChange={(e) => set('requireEvidence', e.target.checked)} /> 증빙 파일 1건 이상</label>
+        <label className="check"><input type="checkbox" checked={req.has('assignee')} onChange={() => toggleReq('assignee')} /> 담당자</label>
+        {cols.map((c) => (
+          <label key={c.id} className="check"><input type="checkbox" checked={req.has(String(c.id))} onChange={() => toggleReq(String(c.id))} /> {c.name}</label>
+        ))}
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: '1rem' }}>
+        <button className="btn btn-primary" disabled={busy} onClick={() => save()}>저장</button>
+      </div>
     </div>
   )
 }

@@ -33,4 +33,8 @@ public class ItemUpdate {
 
     /** 댓글을 수정한 시각 (수정 안 했으면 null → 화면에 '수정됨' 표시 안 함) */
     private LocalDateTime updatedAt;
+
+    /** 논리 삭제 (내용은 보존, 화면에는 '삭제된 댓글'로 표시) */
+    private LocalDateTime deletedAt;
+    private Long deletedBy;
 }

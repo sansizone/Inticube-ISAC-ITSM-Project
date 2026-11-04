@@ -29,7 +29,6 @@ import static com.inticube.teamboard.dao.Rows.*;
 @RequiredArgsConstructor
 @Transactional
 public class ItemService {
-    private static final org.slf4j.Logger AUDIT = org.slf4j.LoggerFactory.getLogger("AUDIT");
     private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9._-]{3,50}(?:@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+)?)");  // @아이디 또는 @이메일아이디
 
     private final ItemDao itemDao;
@@ -46,10 +45,13 @@ public class ItemService {
     private final AccessGuard guard;
     private final RelationService relations;
     private final MaintenanceService maint;
+    private final AuditService audit;
+    private final SrPolicyService srPolicy;
 
     public Item getItem(Long id) {
         Item i = itemDao.selectById(id);
         if (i == null) throw ApiException.notFound("아이템");
+        if (i.getDeletedAt() != null) throw new ApiException(org.springframework.http.HttpStatus.NOT_FOUND, "삭제되어 휴지통에 있는 업무입니다.");
         return i;
     }
 
@@ -81,6 +83,8 @@ public class ItemService {
         if (i.getParent() != null) i.setType(i.getParent().getType()); else i.setType(boardService.getDefaultType(g.getBoard().getId()));
         itemDao.insert(i);
         maint.insertWatch(i.getId(), actor);
+        audit.record("ITEM_CREATE", g.getBoard().getId(), g.getBoard().getName(), "ITEM", i.getId(), i.getName(),
+                "그룹: " + g.getName() + (i.getParent() != null ? " (하위 업무, 상위 #" + i.getParent().getId() + ")" : ""));
         return BoardService.toDto(i, 0, 0);
     }
 
@@ -90,9 +94,15 @@ public class ItemService {
      * estimateHours, progress, recurRule, values
      */
     public ItemDto updateItem(Long id, Map<String, Object> body, UserPrincipal me) {
+        itemDao.lockById(id);   // 같은 업무를 동시에 고치면 앞 요청이 끝난 뒤 최신 값으로 다시 읽어 처리
         Item i = getItem(id);
+        body = new LinkedHashMap<>(body);
+        if (body.remove("base") instanceof Map<?, ?> base) checkBase(i, body, base);
         AppUser actorFull = getUser(me.id());
         String boardName = i.getBoard().getName();
+        SrPolicyService.Policy policy = srPolicy.get(i.getBoard().getId());
+        srPolicy.checkUpdate(i, body, policy);
+        BoardStatus statusBefore = i.getStatus();
         List<String> logs = new ArrayList<>();
         List<Runnable> after = new ArrayList<>(); // 본 업무 저장 뒤 실행할 후속 작업
         BoardStatus[] statusTo = { null };       // 이번 수정으로 바뀐 상태 (자동화 규칙 실행용)
@@ -100,12 +110,17 @@ public class ItemService {
         if (body.containsKey("name")) {
             String name = str(body.get("name"));
             if (name == null || name.isBlank() || name.length() > 300) throw ApiException.bad("이름은 1~300자여야 합니다.");
+            String before = i.getName();
+            if (!Objects.equals(before, name.trim())) logs.add("이름: " + before + " → " + name.trim());
             i.setName(name.trim());
         }
         if (body.containsKey("description")) {
             String d = str(body.get("description"));
             if (d != null && d.length() > 50000) throw ApiException.bad("설명은 50,000자 이하여야 합니다.");
-            i.setDescription(d == null || d.isBlank() ? "" : d);
+            String next = d == null || d.isBlank() ? "" : d;
+            String before = i.getDescription() == null ? "" : i.getDescription();
+            if (!before.equals(next)) logs.add("설명: " + before.length() + "자 → " + next.length() + "자 (내용 수정)");
+            i.setDescription(next);
         }
         if (body.containsKey("statusId")) {
             Long sid = toLong(body.get("statusId"));
@@ -258,6 +273,7 @@ public class ItemService {
             String r = str(body.get("recurRule"));
             if (r != null && !r.isBlank() && !r.matches("(DAILY|WEEKLY|MONTHLY|YEARLY):[1-9][0-9]?")) throw ApiException.bad("반복 규칙 형식이 올바르지 않습니다.");
             String next = r == null || r.isBlank() ? null : r;
+            if (next != null && next.equals(recurBase(i.getRecurRule()))) next = i.getRecurRule();  // 같은 규칙이면 기준일 유지
             if (!Objects.equals(i.getRecurRule(), next)) {
                 logs.add("반복: " + recurLabel(i.getRecurRule()) + " → " + recurLabel(next));
                 i.setRecurRule(next);
@@ -273,7 +289,18 @@ public class ItemService {
         i.setUpdatedAt(LocalDateTime.now());
         itemDao.update(i);
         after.forEach(Runnable::run);
-        // 활동 기록: 반복 업무 안내는 그대로, 값 변경은 '생성 직후 제외 + 연속 변경 묶기'
+        if (policy != null) {
+            srPolicy.afterUpdate(i, policy, statusBefore, body, actorFull, logs);
+            // 자동 컬럼(처리완료일·등록 지연·장애등급 등)은 서버가 바꿨으므로 응답에 최신 값을 담는다
+            Set<Long> autoIds = new HashSet<>(policy.autoCols());
+            if (policy.receivedAtCol() != null) autoIds.add(policy.receivedAtCol());
+            if (changedValues == null) changedValues = new LinkedHashMap<>();
+            Map<Long, String> cv = changedValues;
+            Map<Long, String> now = new HashMap<>();
+            if (!autoIds.isEmpty()) itemDao.selectValuesByItemAndColumns(i.getId(), autoIds).forEach(v -> now.put(v.getColumnId(), v.getValue()));
+            for (Long c : autoIds) cv.put(c, now.getOrDefault(c, ""));
+        }
+        // 활동 기록: 모든 변경을 그대로 기록
         List<String> changes = new ArrayList<>();
         for (String log : logs) { if (log.startsWith("반복 업무")) insertSystemLog(i, actorFull, log); else changes.add(log); }
         insertChangeLog(i, actorFull, changes);
@@ -311,7 +338,6 @@ public class ItemService {
         if (c == null || !c.getBoard().getId().equals(i.getBoard().getId()) || !"PHONE".equals(c.getType())) throw ApiException.bad("전화번호 컬럼이 아닙니다.");
         String raw = itemDao.selectValuesByItemAndColumns(itemId, Set.of(columnId)).stream().map(ItemValue::getValue).findFirst().orElse("");
         insertSystemLog(i, getUser(me.id()), "개인정보 열람: " + c.getName() + " (사유: " + why + ")");
-        AUDIT.info("PHONE_REVEAL user={} item={} column={} reason={}", me.id(), itemId, columnId, why.replaceAll("[\\r\\n]", " "));
         return raw;
     }
 
@@ -388,13 +414,44 @@ public class ItemService {
         return (n == 1 ? "매" : n + "") + unit + "마다";
     }
 
+    /** 반복 규칙의 단위·간격 부분 ("MONTHLY:1:31" → "MONTHLY:1"). 세 번째 값은 월말 보정용 기준일 */
+    static String recurBase(String rule) {
+        if (rule == null) return null;
+        String[] p = rule.split(":");
+        return p.length >= 2 ? p[0] + ":" + p[1] : rule;
+    }
+
+    /**
+     * 다음 회차 마감일. 월·년 단위는 처음 기준일(anchor)을 기억해 월말이 밀리지 않게 한다
+     * (1/31 → 2/28 → 3/31 → 4/30). 계산한 날짜가 이미 지났으면 오늘 이후가 될 때까지 같은 간격으로 넘긴다.
+     */
+    static LocalDate nextRecurDue(String unit, int n, LocalDate base, int anchor, LocalDate today) {
+        LocalDate d = base;
+        int guard = 0;
+        do {
+            d = step(unit, n, d, anchor);
+        } while (d.isBefore(today) && ++guard < 10000);
+        return d;
+    }
+    private static LocalDate step(String unit, int n, LocalDate d, int anchor) {
+        return switch (unit) {
+            case "DAILY" -> d.plusDays(n);
+            case "WEEKLY" -> d.plusWeeks(n);
+            case "MONTHLY" -> { LocalDate m = d.plusMonths(n); yield m.withDayOfMonth(Math.min(anchor, m.lengthOfMonth())); }
+            default -> { LocalDate y = d.plusYears(n); yield y.withDayOfMonth(Math.min(anchor, y.lengthOfMonth())); }
+        };
+    }
+
     /** 반복 업무: 완료 처리되면 다음 회차를 같은 그룹에 만든다 (유형·담당자·담당업무·우선순위·예상시간·컬럼 값·반복 규칙 복사) */
     private void spawnNext(Item done, AppUser actor, List<String> logs) {
         String[] p = done.getRecurRule().split(":");
+        String unit = p[0];
         int n = p.length > 1 ? Integer.parseInt(p[1]) : 1;
-        LocalDate base = done.getDueDate() != null ? done.getDueDate() : LocalDate.now();
-        LocalDate nextDue = switch (p[0]) { case "DAILY" -> base.plusDays(n); case "WEEKLY" -> base.plusWeeks(n); case "MONTHLY" -> base.plusMonths(n); default -> base.plusYears(n); };
-        while (!nextDue.isAfter(LocalDate.now().minusDays(1)) && p[0].equals("DAILY")) nextDue = nextDue.plusDays(n); // 지난 날짜면 오늘 이후로
+        LocalDate today = LocalDate.now();
+        LocalDate base = done.getDueDate() != null ? done.getDueDate() : today;
+        int anchor = p.length > 2 ? Integer.parseInt(p[2]) : base.getDayOfMonth();
+        LocalDate nextDue = nextRecurDue(unit, n, base, anchor, today);
+        String nextRule = unit.equals("MONTHLY") || unit.equals("YEARLY") ? unit + ":" + n + ":" + anchor : unit + ":" + n;
         Item next = new Item();
         next.setBoard(done.getBoard());
         next.setGroup(done.getGroup());
@@ -405,17 +462,19 @@ public class ItemService {
         next.setDuty(done.getDuty());
         next.setPriority(done.getPriority());
         next.setEstimateHours(done.getEstimateHours());
-        next.setRecurRule(done.getRecurRule());
+        next.setRecurRule(nextRule);
         next.setVersion(done.getVersion());
         if (done.getStartDate() != null && done.getDueDate() != null) next.setStartDate(nextDue.minusDays(java.time.temporal.ChronoUnit.DAYS.between(done.getStartDate(), done.getDueDate())));
         next.setDueDate(nextDue);
         next.setCreatedBy(actor);
         next.setSortOrder(itemDao.selectMaxSort(done.getGroup().getId()) + 1);
-        partsDao.selectStatusesByBoard(done.getBoard().getId()).stream().findFirst().ifPresent(next::setStatus);
+        next.setStatus(getInitialStatus(done.getBoard().getId()));
         next.setKeyNum(boardService.getNextKey(done.getBoard()));
         itemDao.insert(next);
         List<ItemValue> copies = new ArrayList<>();
+        Set<Long> skip = srPolicy.autoCols(done.getBoard().getId());  // 처리완료일 등 자동 값은 새 회차에 복사하지 않음
         for (ItemValue v : itemDao.selectValuesByItem(done.getId())) {
+            if (skip.contains(v.getColumnId())) continue;
             ItemValue c = new ItemValue(); c.setItemId(next.getId()); c.setColumnId(v.getColumnId()); c.setValue(v.getValue()); copies.add(c);
         }
         if (!copies.isEmpty()) itemDao.batchInsertValues(copies);
@@ -596,9 +655,70 @@ public class ItemService {
         }
     }
 
-    public void deleteItem(Long id) {
+    /** 삭제 = 휴지통으로 이동 (삭제자·사유·시각 기록, 관리자가 복원 가능) */
+    public void deleteItem(Long id, String reason) {
         Item i = getItem(id);
         guard.setDeleteItemChecked(i);
+        boardService.softDeleteItems(List.of(i), requireReason(reason));
+    }
+
+    private static String requireReason(String reason) {
+        if (reason == null || reason.isBlank()) throw ApiException.bad("삭제 사유를 입력하세요.");
+        if (reason.length() > 500) throw ApiException.bad("삭제 사유는 500자 이하여야 합니다.");
+        return reason.trim();
+    }
+
+    // ---------- 휴지통 (시스템 관리자) ----------
+    public record TrashRow(Long id, String key, String name, Long boardId, String boardName, String groupName, boolean sub,
+                           int childCount, LocalDateTime deletedAt, String deletedByName, String deleteReason, String createdByName) {}
+    public record TrashPage(List<TrashRow> content, long total, int page, int size) {}
+
+    @Transactional(readOnly = true)
+    public TrashPage getTrash(Long boardId, String q, int page, int size) {
+        int sz = Math.max(10, Math.min(size, 200)), pg = Math.max(0, page);
+        String qq = q == null || q.isBlank() ? null : q.trim();
+        long total = itemDao.selectTrashCount(boardId, qq);
+        List<TrashRow> rows = itemDao.selectTrash(boardId, qq, pg * sz, sz).stream().map(m -> {
+            Object kn = m.get("key_num"), pre = m.get("key_prefix");
+            String key = kn == null ? null : (pre == null ? "" : pre + "-") + kn;
+            Object at = m.get("deleted_at");
+            return new TrashRow(((Number) m.get("id")).longValue(), key, (String) m.get("item_name"),
+                    ((Number) m.get("board_id")).longValue(), (String) m.get("board_name"), (String) m.get("group_name"),
+                    m.get("parent_id") != null, ((Number) m.get("child_count")).intValue(),
+                    at instanceof java.sql.Timestamp t ? t.toLocalDateTime() : (LocalDateTime) at,
+                    (String) m.get("deleted_by_name"), (String) m.get("delete_reason"), (String) m.get("created_by_name"));
+        }).toList();
+        return new TrashPage(rows, total, pg, sz);
+    }
+
+    /** 휴지통에서 복원: 같은 시각에 함께 지워진 하위 업무까지 되살림 */
+    public void restoreItem(Long id, UserPrincipal me) {
+        Item i = itemDao.selectById(id);
+        if (i == null) throw ApiException.notFound("업무");
+        if (i.getDeletedAt() == null) throw ApiException.bad("휴지통에 있는 업무가 아닙니다.");
+        if (i.getParent() != null) {
+            Item p = itemDao.selectById(i.getParent().getId());
+            if (p != null && p.getDeletedAt() != null) throw ApiException.bad("상위 업무가 휴지통에 있습니다. 상위 업무를 먼저 복원하세요.");
+        }
+        Set<Long> ids = new LinkedHashSet<>(List.of(i.getId()));
+        List<Long> frontier = List.of(i.getId());
+        while (!frontier.isEmpty()) {
+            List<Long> next = new ArrayList<>();
+            for (Item k : itemDao.selectByParents(frontier))
+                if (i.getDeletedAt().equals(k.getDeletedAt()) && ids.add(k.getId())) next.add(k.getId());
+            frontier = next;
+        }
+        LocalDateTime at = i.getDeletedAt();
+        itemDao.updateRestore(ids, at);
+        insertSystemLog(i, getUser(me.id()), "휴지통에서 복원" + (ids.size() > 1 ? " (하위 업무 " + (ids.size() - 1) + "건 포함)" : "")
+                + " · 삭제 사유: " + i.getDeleteReason());
+    }
+
+    /** 휴지통에서 영구 삭제 (되돌릴 수 없음) */
+    public void purgeItem(Long id) {
+        Item i = itemDao.selectById(id);
+        if (i == null) throw ApiException.notFound("업무");
+        if (i.getDeletedAt() == null) throw ApiException.bad("휴지통에 있는 업무만 영구 삭제할 수 있습니다.");
         boardService.deleteItems(List.of(i));
     }
 
@@ -644,11 +764,13 @@ public class ItemService {
      * 상태·담당업무·컬럼은 같은 이름이 있으면 값 유지, 없으면 비움.
      */
     public ItemDto updateItemMove(Long id, MoveRequest req, UserPrincipal me) {
+        itemDao.lockById(id);
         Item root = getItem(id);
         if (root.getParent() != null) throw ApiException.bad("하위 업무는 상위 업무와 함께 이동합니다. 상위 업무를 이동하세요.");
         if (req.boardId() == null) throw ApiException.bad("이동할 워크스페이스를 선택하세요.");
         Board to = guard.getBoardChecked(req.boardId());
         if (root.getBoard().getId().equals(to.getId())) throw ApiException.bad("같은 워크스페이스입니다.");
+        guard.setRemoveItemChecked(root, "다른 워크스페이스로 옮길");
         moveToBoard(root, to, req.groupId(), getUser(me.id()), "워크스페이스 이동");
         return BoardService.toDto(root, 0, 0);
     }
@@ -714,22 +836,25 @@ public class ItemService {
     private List<Item> getBulkRoots(List<Long> ids) {
         if (ids == null || ids.isEmpty()) throw ApiException.bad("업무를 선택하세요.");
         if (ids.size() > 500) throw ApiException.bad("한 번에 500개까지 처리할 수 있습니다.");
-        List<Item> items = itemDao.selectByIds(new ArrayList<>(new LinkedHashSet<>(ids)));
+        List<Item> items = itemDao.selectByIds(new ArrayList<>(new LinkedHashSet<>(ids))).stream().filter(x -> x.getDeletedAt() == null).toList();
         Set<Long> sel = items.stream().map(Item::getId).collect(Collectors.toSet());
         return items.stream().filter(i -> i.getParent() == null || !sel.contains(i.getParent().getId()))
                 .sorted(Comparator.comparingInt(Item::getSortOrder).thenComparing(Item::getId)).toList();
     }
 
-    public BulkResult deleteItems(List<Long> ids) {
+    public BulkResult deleteItems(List<Long> ids, String reason) {
+        String why = requireReason(reason);
         List<Item> roots = getBulkRoots(ids);
         for (Item i : roots) guard.setDeleteItemChecked(i); // 하나라도 권한이 없으면 아무것도 지우지 않음
-        boardService.deleteItems(roots);
+        boardService.softDeleteItems(roots, why);
         return new BulkResult(roots.size(), ids.size() - roots.size());
     }
 
     /** 다른 워크스페이스로 이동. 하위 업무만 선택한 경우는 상위 업무와 함께만 이동할 수 있어 건너뜀 */
     public BulkResult updateItemsMove(List<Long> ids, Long boardId, Long groupId, UserPrincipal me) {
         List<Item> roots = getBulkRoots(ids);
+        // 하나라도 옮길 권한이 없으면 아무것도 옮기지 않음 (남의 업무를 이동으로 없애지 못하게)
+        for (Item it : roots) if (it.getParent() == null) guard.setRemoveItemChecked(it, "다른 워크스페이스로 옮길");
         int done = 0;
         for (Item it : roots) {
             if (it.getParent() != null) continue;
@@ -762,7 +887,7 @@ public class ItemService {
         c.setParent(parent);
         c.setName(name.length() > 300 ? name.substring(0, 300) : name);
         c.setDescription(src.getDescription());
-        c.setStatus(src.getStatus());
+        c.setStatus(getInitialStatus(src.getBoard().getId()));  // 복제본은 항상 '접수'(없으면 첫 상태)로 시작
         c.setDuty(src.getDuty());
         c.setAssignee(src.getAssignee());
         c.setPriority(src.getPriority());
@@ -777,12 +902,21 @@ public class ItemService {
         c.setKeyNum(boardService.getNextKey(src.getBoard()));
         itemDao.insert(c);
         List<ItemValue> vals = new ArrayList<>();
+        Set<Long> skip = srPolicy.autoCols(src.getBoard().getId());  // 처리완료일·등록 지연·장애등급 등은 복사하지 않음
         for (ItemValue v : itemDao.selectValuesByItem(src.getId())) {
+            if (skip.contains(v.getColumnId())) continue;
             ItemValue n = new ItemValue(); n.setItemId(c.getId()); n.setColumnId(v.getColumnId()); n.setValue(v.getValue()); vals.add(n);
         }
         if (!vals.isEmpty()) itemDao.batchInsertValues(vals);
         maint.insertWatch(c.getId(), actor);
         return c;
+    }
+
+    /** 새로 만들어지는 업무(복제·가져오기)의 시작 상태: '접수', 없으면 첫 번째 상태 */
+    public BoardStatus getInitialStatus(Long boardId) {
+        List<BoardStatus> ss = partsDao.selectStatusesByBoard(boardId);
+        return ss.stream().filter(x -> "접수".equals(x.getLabel() == null ? null : x.getLabel().trim())).findFirst()
+                .orElse(ss.isEmpty() ? null : ss.get(0));
     }
 
     private static String key(String s) { return s == null ? "" : s.trim().toLowerCase(); }
@@ -815,9 +949,11 @@ public class ItemService {
         u.setAuthor(author);
         u.setContent(content.trim());
         extraDao.insertUpdate(u);
-        i.setUpdatedAt(LocalDateTime.now());
-        if (i.getRespondedAt() == null && (i.getCreatedBy() == null || !i.getCreatedBy().getId().equals(author.getId()))) i.setRespondedAt(LocalDateTime.now());
-        itemDao.update(i);
+        LocalDateTime now = LocalDateTime.now();
+        i.setUpdatedAt(now);
+        boolean firstResponse = i.getRespondedAt() == null && (i.getCreatedBy() == null || !i.getCreatedBy().getId().equals(author.getId()));
+        if (firstResponse) i.setRespondedAt(now);
+        itemDao.updateTouch(i.getId(), now, firstResponse ? now : null);  // 전체 행을 덮어쓰지 않음 (동시에 바뀐 상태 등 보존)
         maint.insertWatch(i.getId(), author);
 
         String where = "[" + i.getBoard().getName() + "] '" + i.getName() + "'";
@@ -842,14 +978,19 @@ public class ItemService {
         ItemUpdate u = extraDao.selectUpdateById(updateId);
         if (u == null) throw ApiException.notFound("댓글");
         if (u.isSystem()) throw ApiException.bad("활동 기록은 수정할 수 없습니다.");
+        if (u.getDeletedAt() != null) throw ApiException.bad("삭제된 댓글은 수정할 수 없습니다.");
         if (!u.getAuthor().getId().equals(me.id())) throw ApiException.forbidden();
+        if (u.getContent() != null && u.getContent().equals(content.trim())) return UpdateDto.of(u);
         Set<Long> before = new HashSet<>();
         for (AppUser x : mentions.getMentionedUsers(u.getContent())) before.add(x.getId());
+        // 수정 전 내용은 이력 테이블에 보존
+        extraDao.insertUpdateRev(u.getId(), u.getContent(), me.id(), LocalDateTime.now());
         u.setContent(content.trim());
         u.setUpdatedAt(LocalDateTime.now());
         extraDao.updateUpdateContent(u);
         Item i = getItem(u.getItem().getId());
         AppUser author = getUser(me.id());
+        insertSystemLog(i, author, "댓글 수정: 작성 " + written(u) + " (이전 내용 보존)");
         String where = "[" + i.getBoard().getName() + "] '" + i.getName() + "'";
         String preview = u.getContent().length() > 60 ? u.getContent().substring(0, 60) + "…" : u.getContent();
         for (AppUser target : mentions.getMentionedUsers(u.getContent()))
@@ -858,13 +999,29 @@ public class ItemService {
         return UpdateDto.of(u);
     }
 
+    /** 댓글 수정 이력 (작성자 본인·관리자) */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> getUpdateRevs(Long updateId, UserPrincipal me) {
+        ItemUpdate u = extraDao.selectUpdateById(updateId);
+        if (u == null) throw ApiException.notFound("댓글");
+        if (!me.isAdmin() && (u.getAuthor() == null || !u.getAuthor().getId().equals(me.id()))) throw ApiException.forbidden();
+        return extraDao.selectUpdateRevs(updateId);
+    }
+
+    /** 논리 삭제: 내용은 DB에 보존하고 화면에는 '삭제된 댓글'로 표시. 답글은 그대로 둠 */
     public void deleteUpdate(Long updateId, UserPrincipal me) {
         ItemUpdate u = extraDao.selectUpdateById(updateId);
         if (u == null) throw ApiException.notFound("업데이트");
         if (u.isSystem()) throw ApiException.bad("활동 기록은 삭제할 수 없습니다.");
+        if (u.getDeletedAt() != null) return;
         if (!me.isAdmin() && !u.getAuthor().getId().equals(me.id())) throw ApiException.forbidden();
-        extraDao.deleteUpdatesByParent(u.getId());
-        extraDao.deleteUpdate(u.getId());
+        extraDao.updateUpdateDeleted(u.getId(), me.id(), LocalDateTime.now());
+        String writer = u.getAuthor() != null ? u.getAuthor().getName() : "알 수 없음";
+        insertSystemLog(getItem(u.getItem().getId()), getUser(me.id()), "댓글 삭제: 작성자 " + writer + ", 작성 " + written(u) + " (내용 보존)");
+    }
+
+    private static String written(ItemUpdate u) {
+        return u.getCreatedAt() != null ? u.getCreatedAt().withNano(0).toString().replace('T', ' ') : "-";
     }
 
     // ---------- 첨부파일 ----------
@@ -872,35 +1029,55 @@ public class ItemService {
         if (file == null || file.isEmpty()) throw ApiException.bad("빈 파일은 업로드할 수 없습니다.");
         Item i = getItem(itemId);
         AppUser uploader = getUser(me.id());
+        String name = FileStorageService.cleanName(file.getOriginalFilename());
+        // 증빙 품질: 내용 해시, 확장자·실제 형식 일치, 최소 크기
+        String hash; byte[] head;
+        try { var ins = Evidence.inspect(file.getInputStream()); hash = ins.hash(); head = ins.head(); }
+        catch (java.io.IOException e) { throw ApiException.bad("파일을 읽을 수 없습니다."); }
+        String mismatch = Evidence.checkType(name, head);
+        if (mismatch != null) throw ApiException.bad(mismatch);
+        SrPolicyService.Policy p = srPolicy.get(i.getBoard().getId());
+        if (p != null && file.getSize() < Evidence.MIN_SIZE)
+            throw ApiException.bad("파일이 너무 작습니다 (" + file.getSize() + "바이트). 내용이 있는 증빙 파일을 첨부하세요.");
+        String warning = null;
+        List<Map<String, Object>> dup = extraDao.selectAttachmentsByHash(i.getBoard().getId(), hash);
+        if (!dup.isEmpty()) {
+            Map<String, Object> d = dup.get(0);
+            boolean same = Objects.equals(lng(d, "item_id"), i.getId());
+            warning = "같은 내용의 파일이 이미 " + (same ? "이 업무에" : "'" + d.get("item_name") + "' 업무에") + " 있습니다 (" + d.get("original_name") + ").";
+        }
         String stored = storage.store(file);
         Attachment a = new Attachment();
         a.setItem(i);
-        a.setOriginalName(FileStorageService.cleanName(file.getOriginalFilename()));
+        a.setOriginalName(name);
         a.setContentType(file.getContentType());
         a.setFileSize(file.getSize());
         a.setStoredName(stored);
         a.setUploader(uploader);
+        a.setFileHash(hash);
         extraDao.insertAttachment(a);
-        insertSystemLog(i, uploader, "파일 첨부: " + a.getOriginalName());
-        return AttachmentDto.of(a);
+        insertSystemLog(i, uploader, "파일 첨부: " + a.getOriginalName() + (warning != null ? " (중복 내용 경고)" : ""));
+        return AttachmentDto.of(a, warning);
     }
 
     public record Download(String name, String contentType, long size, Resource resource) {}
 
     @Transactional(readOnly = true)
-    public Download getDownload(Long attachmentId) {
+    public Download getDownload(Long attachmentId, UserPrincipal me) {
         Attachment a = extraDao.selectAttachmentById(attachmentId);
-        if (a == null) throw ApiException.notFound("파일");
+        if (a == null || (a.getDeletedAt() != null && (me == null || !me.isAdmin()))) throw ApiException.notFound("파일");
         return new Download(a.getOriginalName(), a.getContentType(), a.getFileSize(), storage.load(a.getStoredName()));
     }
 
+    /** 논리 삭제: 파일은 디스크에 보존(관리자만 내려받기 가능), 완료 잠금이면 삭제 불가 */
     public void deleteAttachment(Long attachmentId, UserPrincipal me) {
         Attachment a = extraDao.selectAttachmentById(attachmentId);
-        if (a == null) throw ApiException.notFound("파일");
+        if (a == null || a.getDeletedAt() != null) throw ApiException.notFound("파일");
         if (!me.isAdmin() && !a.getUploader().getId().equals(me.id())) throw ApiException.forbidden();
-        storage.delete(a.getStoredName());
-        extraDao.deleteAttachment(a.getId());
-        insertSystemLog(a.getItem(), getUser(me.id()), "파일 삭제: " + a.getOriginalName());
+        Item i = getItem(a.getItem().getId());
+        srPolicy.checkNotLocked(i, "증빙 파일");
+        extraDao.updateAttachmentDeleted(a.getId(), me.id(), LocalDateTime.now());
+        insertSystemLog(i, getUser(me.id()), "파일 삭제: " + a.getOriginalName() + " (파일 보존)");
     }
 
     // ---------- 검색/대시보드 ----------
@@ -956,70 +1133,49 @@ public class ItemService {
     }
 
     // ---------- 내부 유틸 ----------
-    /** 만든 사람이 생성 후 이 시간 안에 채우는 값은 '업무를 만들었습니다'에 포함된 것으로 보고 기록하지 않음 */
-    private static final long INITIAL_SETUP_MINUTES = 10;
-    /** 같은 사람이 이 시간 안에 연달아 바꾼 값은 한 줄로 묶음 */
-    private static final long MERGE_MINUTES = 5;
     private static final String SEP = " · ";
 
     /**
-     * 값 변경 활동 기록.
-     * - 업무를 만든 사람이 생성 10분 안에 바꾼 값은 기록하지 않음 (처음 여러 칸을 채우는 단계)
-     * - 같은 사람이 5분 안에 연달아 바꾸면 직전 기록 한 줄에 합침. 같은 항목을 또 바꾸면 처음 값 → 마지막 값으로,
-     *   결국 원래 값으로 돌아왔으면 그 항목은 빼고, 남은 게 없으면 줄 자체를 지움
+     * 값 변경 활동 기록 — 감사 증적으로 쓰기 위해 모든 변경을 그대로 한 줄씩 남긴다.
+     * (생성 직후 변경·연속 변경·원래 값으로 되돌림도 생략·합치기·삭제 없이 기록)
      */
-    private void insertChangeLog(Item i, AppUser actor, List<String> changes) {
-        if (changes.isEmpty()) return;
-        LocalDateTime now = LocalDateTime.now();
-        if (i.getCreatedBy() != null && i.getCreatedBy().getId().equals(actor.getId())
-                && i.getCreatedAt() != null && i.getCreatedAt().isAfter(now.minusMinutes(INITIAL_SETUP_MINUTES))) return;
-        ItemUpdate last = extraDao.selectLastSystemUpdate(i.getId());
-        if (last != null && last.getAuthor() != null && last.getAuthor().getId().equals(actor.getId())) {
-            LocalDateTime at = last.getUpdatedAt() != null ? last.getUpdatedAt() : last.getCreatedAt();
-            LinkedHashMap<String, String[]> merged = parseChanges(last.getContent());
-            if (at != null && at.isAfter(now.minusMinutes(MERGE_MINUTES)) && merged != null) {
-                for (String c : changes) {
-                    String[] f = splitChange(c);
-                    if (f == null) { merged = null; break; }
-                    String[] prev = merged.get(f[0]);
-                    if (prev == null) merged.put(f[0], new String[]{f[1], f[2]});
-                    else if (prev[0].equals(f[2])) merged.remove(f[0]);      // 원래 값으로 되돌림
-                    else prev[1] = f[2];
-                }
-                if (merged != null) {
-                    if (merged.isEmpty()) { extraDao.deleteUpdate(last.getId()); return; }
-                    StringBuilder sb = new StringBuilder();
-                    for (var e : merged.entrySet()) {
-                        if (sb.length() > 0) sb.append(SEP);
-                        sb.append(e.getKey()).append(": ").append(e.getValue()[0]).append(" → ").append(e.getValue()[1]);
-                    }
-                    last.setContent(sb.toString());
-                    last.setUpdatedAt(now);
-                    extraDao.updateUpdateContent(last);
-                    return;
-                }
+    /**
+     * 동시 수정 충돌 검사. 화면이 편집을 시작할 때 본 값(base)과 지금 저장된 값이 다르고,
+     * 이번에 저장하려는 값과도 다르면 다른 사람이 그 사이에 고친 것 → 덮어쓰지 않고 409.
+     * 대상: 이름, 설명, 텍스트·긴 텍스트·숫자·링크 컬럼 (자유 입력이라 덮어쓰면 내용이 사라지는 항목)
+     */
+    private void checkBase(Item i, Map<String, Object> body, Map<?, ?> base) {
+        if (body.containsKey("name") && base.containsKey("name"))
+            conflictIf(nz(str(base.get("name"))).trim(), nz(i.getName()).trim(), nz(str(body.get("name"))).trim(), "이름");
+        if (body.containsKey("description") && base.containsKey("description"))
+            conflictIf(nz(str(base.get("description"))), nz(i.getDescription()), nz(str(body.get("description"))), "설명");
+        if (body.get("values") instanceof Map<?, ?> vm && base.get("values") instanceof Map<?, ?> bv && !bv.isEmpty()) {
+            Map<Long, BoardColumn> cols = partsDao.selectColumnsByBoard(i.getBoard().getId()).stream()
+                    .collect(Collectors.toMap(BoardColumn::getId, Function.identity()));
+            Set<Long> ids = new HashSet<>();
+            for (Object k : bv.keySet()) { Long c = toLong(k); if (c != null && cols.containsKey(c)) ids.add(c); }
+            if (ids.isEmpty()) return;
+            Map<Long, String> cur = new HashMap<>();
+            itemDao.selectValuesByItemAndColumns(i.getId(), ids).forEach(v -> cur.put(v.getColumnId(), v.getValue()));
+            for (Long c : ids) {
+                if (!Set.of("TEXT", "LONG_TEXT", "NUMBER", "LINK").contains(cols.get(c).getType())) continue;
+                Object nv = vm.containsKey(c) ? vm.get(c) : vm.get(String.valueOf(c));
+                if (nv == null && !vm.containsKey(c) && !vm.containsKey(String.valueOf(c))) continue;
+                Object b = bv.containsKey(c) ? bv.get(c) : bv.get(String.valueOf(c));
+                conflictIf(nz(str(b)).trim(), nz(cur.get(c)).trim(), nz(str(nv)).trim(), cols.get(c).getName());
             }
         }
+    }
+    private static void conflictIf(String base, String current, String next, String field) {
+        if (!base.equals(current) && !next.equals(current))
+            throw new ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                    "다른 사용자가 방금 '" + field + "'을(를) 수정했습니다. 새로고침해서 바뀐 내용을 확인한 뒤 다시 저장해 주세요.");
+    }
+    private static String nz(String s) { return s == null ? "" : s; }
+
+    private void insertChangeLog(Item i, AppUser actor, List<String> changes) {
+        if (changes.isEmpty()) return;
         insertSystemLog(i, actor, String.join(SEP, changes));
-    }
-
-    /** "항목: 이전 → 이후" → [항목, 이전, 이후] (형식이 아니면 null) */
-    private static String[] splitChange(String s) {
-        int c = s.indexOf(": "), a = s.indexOf(" → ", c + 2);
-        if (c <= 0 || a < 0) return null;
-        return new String[]{s.substring(0, c), s.substring(c + 2, a), s.substring(a + 3)};
-    }
-
-    /** 값 변경 기록 한 줄 → 항목별 [이전, 이후]. 값 변경 기록이 아니면(파일 첨부 등) null */
-    private static LinkedHashMap<String, String[]> parseChanges(String content) {
-        if (content == null || content.isBlank()) return null;
-        LinkedHashMap<String, String[]> m = new LinkedHashMap<>();
-        for (String part : content.split(java.util.regex.Pattern.quote(SEP))) {
-            String[] f = splitChange(part);
-            if (f == null) return null;
-            m.put(f[0], new String[]{f[1], f[2]});
-        }
-        return m;
     }
 
     private void insertSystemLog(Item i, AppUser actor, String text) {
@@ -1029,6 +1185,21 @@ public class ItemService {
         log.setContent(text);
         log.setSystem(true);
         extraDao.insertUpdate(log);
+        // 감사 로그에도 같은 내용을 남김 (업무를 지워도 이력이 남도록)
+        Board b = i.getBoard();
+        audit.record(auditAction(text), b == null ? null : b.getId(), b == null ? null : b.getName(), "ITEM", i.getId(), i.getName(), text);
+    }
+
+    /** 활동 기록 문구 → 감사 로그 종류 */
+    private static String auditAction(String text) {
+        if (text.startsWith("개인정보 열람")) return "PHONE_REVEAL";
+        if (text.startsWith("댓글 삭제")) return "COMMENT_DELETE";
+        if (text.startsWith("휴지통에서 복원")) return "ITEM_RESTORE";
+        if (text.startsWith("파일 첨부")) return "FILE_ADD";
+        if (text.startsWith("파일 삭제")) return "FILE_DELETE";
+        if (text.startsWith("업무 복제") || text.contains("워크스페이스 이동") || text.startsWith("워크스페이스")) return "ITEM_MOVE";
+        if (text.startsWith("양식으로 접수") || text.startsWith("반복 업무에서 생성")) return "ITEM_CREATE";
+        return "ITEM_UPDATE";
     }
 
     private static Long id(BoardStatus s) { return s == null ? null : s.getId(); }

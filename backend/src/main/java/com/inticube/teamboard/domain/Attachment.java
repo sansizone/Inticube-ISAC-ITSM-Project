@@ -23,4 +23,9 @@ public class Attachment {
     private AppUser uploader;
 
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    /** 파일 내용 SHA-256 (중복 증빙 확인) */
+    private String fileHash;
+    /** 논리 삭제 (파일은 보존) */
+    private LocalDateTime deletedAt;
 }

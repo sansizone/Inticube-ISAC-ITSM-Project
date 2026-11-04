@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { avatarColor, initials, sc } from '../util.js'
 import { Icon, StatusIcon, PriorityIcon } from './icons.jsx'
 import { PRIORITIES } from '../util.js'
+import { useApp } from '../App.jsx'
 
 // ---------- 토스트 ----------
 const ToastCtx = createContext(() => {})
@@ -88,18 +89,30 @@ export function Modal({ title, onClose, children, footer, width: rawWidth = 480 
   )
 }
 
+/**
+ * 확인 창. reason: true 면 사유 입력란을 띄우고 입력한 사유(문자열)를 돌려준다 (취소 시 false)
+ */
 export function useConfirm() {
   const [state, setState] = useState(null)
-  const confirm = (message, { danger = true, okText = '확인' } = {}) =>
-    new Promise((resolve) => setState({ message, danger, okText, resolve }))
+  const [text, setText] = useState('')
+  const confirm = (message, { danger = true, okText = '확인', reason = false, reasonLabel = '사유', reasonPlaceholder = '' } = {}) =>
+    new Promise((resolve) => { setText(''); setState({ message, danger, okText, reason, reasonLabel, reasonPlaceholder, resolve }) })
+  const close = (v) => { state.resolve(v); setState(null) }
+  const ok = () => { if (state.reason) { if (text.trim()) close(text.trim()) } else close(true) }
   const dialog = state && (
-    <Modal title="확인" onClose={() => { state.resolve(false); setState(null) }} width={400}
+    <Modal title="확인" onClose={() => close(false)} width={state.reason ? 460 : 400}
       footer={<>
-        <button className="btn" onClick={() => { state.resolve(false); setState(null) }}>취소</button>
-        <button className={`btn ${state.danger ? 'btn-danger' : 'btn-primary'}`} autoFocus
-          onClick={() => { state.resolve(true); setState(null) }}>{state.okText}</button>
+        <button className="btn" onClick={() => close(false)}>취소</button>
+        <button className={`btn ${state.danger ? 'btn-danger' : 'btn-primary'}`} autoFocus={!state.reason}
+          disabled={state.reason && !text.trim()} onClick={ok}>{state.okText}</button>
       </>}>
       <p style={{ margin: 0, whiteSpace: 'pre-line', color: 'var(--fg-2)' }}>{state.message}</p>
+      {state.reason && (
+        <label className="field" style={{ marginTop: 12 }}><span>{state.reasonLabel} <em>필수</em></span>
+          <textarea className="input" rows={3} maxLength={500} autoFocus value={text} placeholder={state.reasonPlaceholder}
+            onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) ok() }} />
+        </label>
+      )}
     </Modal>
   )
   return [confirm, dialog]
@@ -162,13 +175,18 @@ function SearchMenu({ placeholder, items, renderItem, onPick, activeKey, extra }
 }
 
 export function UserPicker({ users, value, onPick, allowNone = true }) {
+  const { me } = useApp() || {}
+  // 로그인한 사용자를 맨 위에 고정 (추천)
+  const mine = me ? users.find((u) => u.id === me.id) : null
+  const rest = mine ? users.filter((u) => u.id !== mine.id) : users
   const items = [
+    ...(mine ? [{ key: mine.id, value: mine.id, search: `나 ${mine.name} ${mine.username} ${mine.department || ''}`, user: mine, isMe: true }] : []),
     ...(allowNone ? [{ key: 'none', value: null, search: '담당자 없음 none', user: null }] : []),
-    ...users.map((u) => ({ key: u.id, value: u.id, search: `${u.name} ${u.username} ${u.department || ''}`, user: u })),
+    ...rest.map((u) => ({ key: u.id, value: u.id, search: `${u.name} ${u.username} ${u.department || ''}`, user: u })),
   ]
   return <SearchMenu placeholder="담당자 지정…" items={items} activeKey={value ?? 'none'} onPick={onPick}
     renderItem={(x) => <><Avatar user={x.user} size={18} /><span className="grow ellipsis">{x.user ? x.user.name : '담당자 없음'}</span>
-      {x.user?.department && <span className="menu-meta">{x.user.department}</span>}</>} />
+      {x.isMe ? <span className="me-badge">나</span> : x.user?.department && <span className="menu-meta">{x.user.department}</span>}</>} />
 }
 
 export function StatusPicker({ statuses, value, onPick }) {

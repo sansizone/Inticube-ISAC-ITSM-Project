@@ -421,7 +421,7 @@ public class MondayImportService {
             // 상위가 지워지면 하위도 같이 지워지므로, 상위가 남는 하위만 따로 넘긴다
             List<Item> roots = gone.stream().filter(i -> i.getParent() == null || !goneIds.contains(i.getParent().getId())).toList();
             deleted = gone.size();
-            boardService.deleteItems(roots);
+            boardService.softDeleteItems(roots, "엑셀 재이관: 엑셀에 없는 항목 정리");
         } else {
             long missing = existing.stream().filter(i -> !matched.contains(i.getId())).count();
             if (missing > 0) warnings.add("엑셀에 없는 기존 항목 " + missing + "건은 그대로 두었습니다.");
@@ -834,7 +834,7 @@ public class MondayImportService {
     static String defaultStatusFor(String label) {
         String l = norm(label);
         if (l.matches("done|completed?|완료")) return "완료";
-        if (l.matches("working on it|in progress|진행 ?중")) return "진행중";
+        if (l.matches("working on it|in progress|진행 ?중|처리 ?중")) return "처리중";
         if (l.matches("stuck|blocked|막힘")) return "막힘";
         if (l.matches("not started|대기")) return "대기";
         return null;

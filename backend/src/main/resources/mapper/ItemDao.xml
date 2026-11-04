@@ -32,6 +32,9 @@
     <result property="recurRule"     column="recur_rule"/>
     <result property="createdAt"     column="created_at"/>
     <result property="updatedAt"     column="updated_at"/>
+    <result property="deletedAt"     column="deleted_at"/>
+    <result property="deletedBy"     column="deleted_by"/>
+    <result property="deleteReason"  column="delete_reason"/>
     <association property="board"     resultMap="com.inticube.teamboard.dao.BoardDao.boardBrief"        columnPrefix="b_"/>
     <association property="group"     resultMap="com.inticube.teamboard.dao.BoardPartsDao.group"        columnPrefix="g_"/>
     <association property="status"    resultMap="com.inticube.teamboard.dao.BoardPartsDao.status"       columnPrefix="s_" notNullColumn="id"/>
@@ -53,7 +56,7 @@
     SELECT i.id, i.item_name, COALESCE(i.description, '') AS description, i.external_id,
            i.priority, i.start_date, i.due_date, i.sort_order,
            i.key_num, i.estimate_hours, i.progress, i.responded_at, i.resolved_at, i.recur_rule,
-           i.created_at, i.updated_at,
+           i.created_at, i.updated_at, i.deleted_at, i.deleted_by, i.delete_reason,
            <include refid="com.inticube.teamboard.dao.BoardDao.boardCols_b"/>,
            <include refid="com.inticube.teamboard.dao.BoardPartsDao.groupCols_g"/>,
            <include refid="com.inticube.teamboard.dao.BoardPartsDao.statusCols_s"/>,
@@ -80,6 +83,18 @@
        =================================================================== -->
 
   <!-- 업무 한 건 -->
+  <!-- 동시 수정 직렬화: 같은 업무를 고치는 요청은 트랜잭션이 끝날 때까지 기다린다 -->
+  <select id="lockById" resultType="long">
+    SELECT id FROM tb_item WHERE id = #{id} FOR UPDATE
+  </select>
+  <!-- 댓글·시간 기록 등 부속 작업: 다른 컬럼은 건드리지 않고 수정 시각·첫 응답 시각만 -->
+  <update id="updateTouch">
+    UPDATE tb_item
+       SET updated_at   = #{at},
+           responded_at = COALESCE(responded_at, #{respondedAt})
+     WHERE id = #{id}
+  </update>
+
   <select id="selectById" resultMap="item">
     <include refid="itemSelect"/>
      WHERE i.id = #{id}
@@ -96,6 +111,14 @@
   <select id="selectByBoard" resultMap="item">
     <include refid="itemSelect"/>
      WHERE i.board_id = #{boardId}
+       AND i.deleted_at IS NULL
+     ORDER BY i.sort_order, i.id
+  </select>
+
+  <!-- 워크스페이스의 업무 전체 — 휴지통 포함 (워크스페이스 삭제) -->
+  <select id="selectByBoardAll" resultMap="item">
+    <include refid="itemSelect"/>
+     WHERE i.board_id = #{boardId}
      ORDER BY i.sort_order, i.id
   </select>
 
@@ -103,6 +126,7 @@
   <select id="selectByGroup" resultMap="item">
     <include refid="itemSelect"/>
      WHERE i.group_id = #{groupId}
+       AND i.deleted_at IS NULL
      ORDER BY i.sort_order, i.id
   </select>
 
@@ -110,6 +134,7 @@
   <select id="selectByParent" resultMap="item">
     <include refid="itemSelect"/>
      WHERE i.parent_id = #{parentId}
+       AND i.deleted_at IS NULL
      ORDER BY i.sort_order, i.id
   </select>
 
@@ -124,6 +149,7 @@
   <select id="selectByAssignee" resultMap="item">
     <include refid="itemSelect"/>
      WHERE i.assignee_id = #{userId}
+       AND i.deleted_at IS NULL
      ORDER BY i.due_date NULLS LAST, i.id
   </select>
 
@@ -131,6 +157,7 @@
   <select id="selectByNameLike" resultMap="item">
     <include refid="itemSelect"/>
      WHERE LOWER(i.item_name) LIKE #{pattern}
+       AND i.deleted_at IS NULL
      ORDER BY i.updated_at DESC
      FETCH FIRST 50 ROWS ONLY
   </select>
@@ -140,6 +167,7 @@
     <include refid="itemSelect"/>
      WHERE i.board_id = #{boardId}
        AND i.key_num  = #{keyNum}
+       AND i.deleted_at IS NULL
   </select>
 
   <!-- 아직 번호가 없는 업무 (가져오기·v3.0 이관 후 번호 부여) -->
@@ -156,6 +184,7 @@
      WHERE i.due_date BETWEEN #{from} AND #{to}
        AND i.assignee_id IS NOT NULL
        AND (s.id IS NULL OR s.is_done = false)
+       AND i.deleted_at IS NULL
   </select>
 
   <!-- SLA 알림 대상: 아직 처리되지 않았고 유형에 처리 목표 시간이 있는 업무 -->
@@ -163,6 +192,7 @@
     <include refid="itemSelect"/>
      WHERE i.resolved_at IS NULL
        AND t.resolve_hours IS NOT NULL
+       AND i.deleted_at IS NULL
   </select>
 
   <!-- 그룹 안 마지막 정렬 번호 (새 업무는 끝에) -->
@@ -187,6 +217,7 @@
       FROM tb_item i
       LEFT JOIN tb_board_status s ON s.id = i.status_id
      WHERE i.parent_id IS NULL
+       AND i.deleted_at IS NULL
      GROUP BY i.board_id
   </select>
 
@@ -201,6 +232,7 @@
       FROM tb_item i
       LEFT JOIN tb_app_user a ON a.id = i.assignee_id
      WHERE i.board_id = #{boardId}
+       AND i.deleted_at IS NULL
      ORDER BY i.sort_order, i.id
   </select>
 
@@ -219,6 +251,7 @@
       JOIN tb_board_group g ON g.id = i.group_id
      WHERE i.board_id = #{boardId}
        AND i.parent_id IS NULL
+       AND i.deleted_at IS NULL
      ORDER BY g.sort_order, i.sort_order, i.id
   </select>
 
@@ -227,6 +260,66 @@
     SELECT id
       FROM tb_item
      WHERE board_id = #{boardId}
+  </select>
+
+  <!-- ===================================================================
+       휴지통 (소프트 삭제)
+       =================================================================== -->
+
+  <!-- 휴지통으로 이동: 아직 삭제되지 않은 것만 표시 -->
+  <update id="updateSoftDelete">
+    UPDATE tb_item
+       SET deleted_at = #{at}, deleted_by = #{by}, delete_reason = #{reason}
+     WHERE deleted_at IS NULL
+       AND id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 복원: 같은 시각에 함께 지워진 업무만 되살림 -->
+  <update id="updateRestore">
+    UPDATE tb_item
+       SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL
+     WHERE deleted_at = #{at}
+       AND id IN
+    <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
+  </update>
+
+  <!-- 그룹을 지울 때 그 그룹에 남은 휴지통 업무를 다른 그룹으로 옮김 -->
+  <update id="updateGroupOfTrashed">
+    UPDATE tb_item
+       SET group_id = #{toGroupId}
+     WHERE group_id = #{fromGroupId}
+       AND deleted_at IS NOT NULL
+  </update>
+
+  <!-- 휴지통 목록: 삭제의 시작점(상위가 함께 지워진 하위는 제외), 최근 삭제순 -->
+  <sql id="trashWhere">
+     WHERE i.deleted_at IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM tb_item pp WHERE pp.id = i.parent_id AND pp.deleted_at = i.deleted_at)
+    <if test="boardId != null">AND i.board_id = #{boardId}</if>
+    <if test="q != null and q != ''">
+       AND (i.item_name ILIKE '%' || #{q} || '%' OR i.delete_reason ILIKE '%' || #{q} || '%' OR b.board_name ILIKE '%' || #{q} || '%')
+    </if>
+  </sql>
+  <select id="selectTrash" resultType="map">
+    SELECT i.id, i.item_name, i.key_num, i.parent_id, i.board_id, b.board_name, b.key_prefix, g.group_name,
+           i.deleted_at, i.deleted_by, du.display_name AS deleted_by_name, i.delete_reason,
+           cu.display_name AS created_by_name,
+           (SELECT COUNT(*) FROM tb_item k WHERE k.parent_id = i.id AND k.deleted_at = i.deleted_at) AS child_count
+      FROM tb_item i
+      JOIN tb_board b ON b.id = i.board_id
+      JOIN tb_board_group g ON g.id = i.group_id
+      LEFT JOIN tb_app_user du ON du.id = i.deleted_by
+      LEFT JOIN tb_app_user cu ON cu.id = i.created_by
+    <include refid="trashWhere"/>
+     ORDER BY i.deleted_at DESC, i.id DESC
+     LIMIT #{limit} OFFSET #{offset}
+  </select>
+  <select id="selectTrashCount" resultType="long">
+    SELECT COUNT(*)
+      FROM tb_item i
+      JOIN tb_board b ON b.id = i.board_id
+    <include refid="trashWhere"/>
   </select>
 
   <!-- ===================================================================

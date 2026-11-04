@@ -7,7 +7,7 @@ import { SelectBox } from './BulkActions.jsx'
 import { boardColumns, columnConfig, builtinLabel, BUILTIN_LABEL, addPlaceholder, itemNoun, josa } from './Fields.jsx'
 import { api } from '../api.js'
 import { Icon } from './icons.jsx'
-import { FieldView, FieldEditor, distinctValues, columnsFor, viewColumns } from './Fields.jsx'
+import { FieldView, FieldEditor, distinctValues, fieldOptions, srAutoCols, columnsFor, viewColumns } from './Fields.jsx'
 import { isOverdue } from '../util.js'
 
 const PAGE = 100
@@ -85,9 +85,10 @@ export default function TableView({ board, items, statusById, ops, users, filter
 
   // 드롭다운·사람 후보 값은 컬럼별로 한 번만 계산
   const optCache = useMemo(() => new Map(), [board.items]) // eslint-disable-line
+  const autoCols = useMemo(() => srAutoCols(board), [board.columnConfig]) // eslint-disable-line
   const optionsOf = (col) => {
     if (col.type !== 'DROPDOWN' && col.type !== 'PEOPLE') return []
-    if (!optCache.has(col.id)) optCache.set(col.id, distinctValues(board.items, col))
+    if (!optCache.has(col.id)) optCache.set(col.id, fieldOptions(board, col))
     return optCache.get(col.id)
   }
   const cell = (c, it, sub) => {
@@ -113,7 +114,7 @@ export default function TableView({ board, items, statusById, ops, users, filter
         const col = sub ? subColByName[c.col.name] : c.col
         if (!col) return null
         return <FieldEditor compact col={col} itemId={it.id} value={it.values?.[col.id] || ''} users={users} targetName={board.refBoards?.[col.refBoardId]}
-          options={optionsOf(col)} onSave={(v) => ops.updateItem(it.id, { values: { [col.id]: v } }).catch(() => {})} />
+          options={optionsOf(col)} auto={autoCols.has(col.id)} onSave={(v) => ops.updateItem(it.id, { values: { [col.id]: v } }).catch(() => {})} />
       }
     }
   }

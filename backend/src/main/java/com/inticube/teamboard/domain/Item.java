@@ -70,4 +70,9 @@ public class Item {
     private LocalDateTime createdAt = LocalDateTime.now();
 
     private LocalDateTime updatedAt = LocalDateTime.now();
+
+    /** 휴지통: 삭제 시각·삭제자 ID·사유 (null 이면 정상 업무) */
+    private LocalDateTime deletedAt;
+    private Long deletedBy;
+    private String deleteReason;
 }

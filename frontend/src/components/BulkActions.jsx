@@ -39,8 +39,10 @@ export function BulkBar({ board, ids, onClear, onDone, confirm, canDelete = () =
   }
   const copy = () => run(() => api.post('/api/items/bulk-copy', { ids }), (r) => `${noun} ${r.done}개를 복제했습니다.`)
   const del = async () => {
-    if (!(await confirm(`선택한 ${noun} ${n}개를 삭제할까요?\n하위 ${noun}·댓글·첨부파일도 함께 삭제되며 되돌릴 수 없습니다.`, { okText: `${n}개 삭제` }))) return
-    run(() => api.post('/api/items/bulk-delete', { ids }), (r) => `${noun} ${r.done}개를 삭제했습니다.`)
+    const reason = await confirm(`선택한 ${noun} ${n}개를 삭제할까요?\n하위 ${noun}·댓글·첨부파일과 함께 휴지통으로 옮겨지며, 시스템 관리자가 복원할 수 있습니다.`,
+      { okText: `${n}개 삭제`, reason: true, reasonLabel: '삭제 사유', reasonPlaceholder: '예: 중복 등록, 잘못 등록함' })
+    if (!reason) return
+    run(() => api.post('/api/items/bulk-delete', { ids, reason }), (r) => `${noun} ${r.done}개를 휴지통으로 옮겼습니다.`)
   }
   const exportUrl = `/api/boards/${board.id}/excel?ids=${ids.join(',')}`
 

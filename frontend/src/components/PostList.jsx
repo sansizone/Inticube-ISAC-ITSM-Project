@@ -44,7 +44,7 @@ export default function PostList({ params }) {
         <div className="card-header post-toolbar">
           <div className="cat-tabs">
             <a href={`#${postHref({ q })}`} className={!catId ? 'active' : ''}>전체</a>
-            {categories.map((c) => <a key={c.id} href={`#${postHref({ cat: c.id, q })}`} className={catId === c.id ? 'active' : ''}>{c.name}<span>{c.postCount}</span></a>)}
+            {categories.map((c) => <a key={c.id} href={`#${postHref({ cat: c.id, q })}`} className={catId === c.id ? 'active' : ''}>{c.name}</a>)}
           </div>
           <form className="filter-search" onSubmit={(e) => { e.preventDefault(); navigate(postHref({ cat: catId, q: query.trim() })) }}>
             <Icon name="search" size={13} />

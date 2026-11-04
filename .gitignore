@@ -13,3 +13,7 @@ _upd/
 
 # 화면 빌드 결과물 — CI 가 npm run build 로 새로 만듦 (로컬에서 jar/18080 으로 보려면 npm run build)
 backend/src/main/resources/static/
+
+# 로컬 설정(DB 접속 정보 포함)·작업 캡처 — 커밋하지 않음
+config/
+Claude outputs/

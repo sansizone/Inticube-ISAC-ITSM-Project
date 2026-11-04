@@ -42,12 +42,14 @@
     <result property="system"     column="is_system"/>
     <result property="createdAt"  column="created_at"/>
     <result property="updatedAt"  column="updated_at"/>
+    <result property="deletedAt"  column="deleted_at"/>
+    <result property="deletedBy"  column="deleted_by"/>
     <association property="author" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="au_"/>
     <association property="item"   resultMap="itemRef" columnPrefix="i_"/>
   </resultMap>
 
   <sql id="updateSelect">
-    SELECT u.id, u.content, u.parent_id, u.author_name, u.external_id, u.is_system, u.created_at, u.updated_at,
+    SELECT u.id, u.content, u.parent_id, u.author_name, u.external_id, u.is_system, u.created_at, u.updated_at, u.deleted_at, u.deleted_by,
            <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_au"/>,
            <include refid="itemRefCols"/>
       FROM tb_item_update u
@@ -81,6 +83,7 @@
       FROM tb_item_update u
       JOIN tb_item i ON i.id = u.item_id
      WHERE u.is_system = false
+       AND u.deleted_at IS NULL
        AND i.board_id  = #{boardId}
      GROUP BY u.item_id
   </select>
@@ -167,12 +170,14 @@
     <result property="fileSize"     column="file_size"/>
     <result property="storedName"   column="stored_name"/>
     <result property="createdAt"    column="created_at"/>
+    <result property="fileHash"     column="file_hash"/>
+    <result property="deletedAt"    column="deleted_at"/>
     <association property="uploader" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="up_"/>
     <association property="item"     resultMap="itemRef" columnPrefix="i_"/>
   </resultMap>
 
   <sql id="attachmentSelect">
-    SELECT a.id, a.original_name, a.content_type, a.file_size, a.stored_name, a.created_at,
+    SELECT a.id, a.original_name, a.content_type, a.file_size, a.stored_name, a.created_at, a.file_hash, a.deleted_at,
            <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_up"/>,
            <include refid="itemRefCols"/>
       FROM tb_attachment a
@@ -191,6 +196,7 @@
   <select id="selectAttachmentsByItem" resultMap="attachment">
     <include refid="attachmentSelect"/>
      WHERE a.item_id = #{itemId}
+       AND a.deleted_at IS NULL
      ORDER BY a.created_at DESC, a.id DESC
   </select>
 
@@ -207,15 +213,16 @@
       FROM tb_attachment a
       JOIN tb_item i ON i.id = a.item_id
      WHERE i.board_id = #{boardId}
+       AND a.deleted_at IS NULL
      GROUP BY a.item_id
   </select>
 
   <!-- 첨부 메타 등록 (파일은 FileStorageService 가 먼저 저장) -->
   <insert id="insertAttachment" useGeneratedKeys="true" keyProperty="id">
     INSERT INTO tb_attachment (
-           item_id, original_name, content_type, file_size, stored_name, uploader_id, created_at
+           item_id, original_name, content_type, file_size, stored_name, uploader_id, created_at, file_hash
     ) VALUES (
-           #{item.id}, #{originalName}, #{contentType}, #{fileSize}, #{storedName}, #{uploader.id}, #{createdAt}
+           #{item.id}, #{originalName}, #{contentType}, #{fileSize}, #{storedName}, #{uploader.id}, #{createdAt}, #{fileHash}
     )
   </insert>
 
@@ -371,11 +378,12 @@
     <result property="hours"     column="hours"/>
     <result property="comment"   column="comment_text"/>
     <result property="createdAt" column="created_at"/>
+    <result property="deletedAt" column="deleted_at"/>
     <association property="user" resultMap="com.inticube.teamboard.dao.AppUserDao.userBrief" columnPrefix="u_"/>
   </resultMap>
 
   <sql id="timeSelect">
-    SELECT t.id, t.item_id, t.board_id, t.work_date, t.hours, t.comment_text, t.created_at,
+    SELECT t.id, t.item_id, t.board_id, t.work_date, t.hours, t.comment_text, t.created_at, t.deleted_at,
            <include refid="com.inticube.teamboard.dao.AppUserDao.userCols_u"/>
       FROM tb_time_entry t
       JOIN tb_app_user u ON u.id = t.user_id
@@ -391,6 +399,7 @@
   <select id="selectTimesByItem" resultMap="time">
     <include refid="timeSelect"/>
      WHERE t.item_id = #{itemId}
+       AND t.deleted_at IS NULL
      ORDER BY t.work_date DESC, t.id DESC
   </select>
 
@@ -399,6 +408,7 @@
     SELECT item_id, SUM(hours) AS total
       FROM tb_time_entry
      WHERE board_id = #{boardId}
+       AND deleted_at IS NULL
      GROUP BY item_id
   </select>
 
@@ -432,4 +442,51 @@
     <foreach collection="ids" item="x" open="(" separator="," close=")">#{x}</foreach>
   </delete>
 
+
+  <!-- ===================================================================
+       보존·논리 삭제 (v3.6)
+       =================================================================== -->
+  <update id="updateUpdateDeleted">
+    UPDATE tb_item_update SET deleted_at = #{at}, deleted_by = #{by} WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+  <insert id="insertUpdateRev">
+    INSERT INTO tb_item_update_rev (update_id, content, edited_by, edited_at)
+    VALUES (#{updateId}, #{content}, #{by}, #{at})
+  </insert>
+  <select id="selectUpdateRevs" resultType="map">
+    SELECT r.id, r.content, r.edited_at, u.display_name AS edited_by_name
+      FROM tb_item_update_rev r
+      LEFT JOIN tb_app_user u ON u.id = r.edited_by
+     WHERE r.update_id = #{updateId}
+     ORDER BY r.edited_at, r.id
+  </select>
+  <update id="updateAttachmentDeleted">
+    UPDATE tb_attachment SET deleted_at = #{at}, deleted_by = #{by} WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+  <update id="updateTimeDeleted">
+    UPDATE tb_time_entry SET deleted_at = #{at}, deleted_by = #{by} WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+  <!-- 같은 워크스페이스에 같은 내용의 파일 (item_id, original_name) -->
+  <select id="selectAttachmentsByHash" resultType="map">
+    SELECT a.id, a.item_id, a.original_name, i.item_name, i.key_num
+      FROM tb_attachment a
+      JOIN tb_item i ON i.id = a.item_id
+     WHERE a.file_hash = #{hash}
+       AND a.deleted_at IS NULL
+       AND i.board_id = #{boardId}
+     ORDER BY a.id
+     LIMIT 5
+  </select>
+  <select id="selectTimeSumByUserDate" resultType="java.math.BigDecimal">
+    SELECT COALESCE(SUM(hours), 0) FROM tb_time_entry
+     WHERE user_id = #{userId} AND work_date = #{date} AND deleted_at IS NULL
+  </select>
+  <select id="selectTimeSumByItem" resultType="java.math.BigDecimal">
+    SELECT COALESCE(SUM(hours), 0) FROM tb_time_entry
+     WHERE item_id = #{itemId} AND deleted_at IS NULL
+  </select>
+  <!-- 삭제 포함 시간 기록 건수 (한 번도 기록이 없으면 작업시간을 건드리지 않음: 이관 데이터 보호) -->
+  <select id="selectTimeCountAllByItem" resultType="long">
+    SELECT COUNT(*) FROM tb_time_entry WHERE item_id = #{itemId}
+  </select>
 </mapper>

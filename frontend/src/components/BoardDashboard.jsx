@@ -1,4 +1,4 @@
-import { itemNoun, josa, itemTitle } from './Fields.jsx'
+import { itemNoun, josa, itemTitle, srPolicy } from './Fields.jsx'
 import React from 'react'
 import { Avatar } from './common.jsx'
 import { StatusIcon } from './icons.jsx'
@@ -42,6 +42,24 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
   const trend = months.map((m) => ({ m, created: items.filter((i) => (i.createdAt || '').startsWith(m)).length, resolved: items.filter((i) => (i.resolvedAt || '').startsWith(m)).length }))
   const trendMax = Math.max(1, ...trend.map((t) => Math.max(t.created, t.resolved)))
 
+  // ---- SR 통제 지표: 등록 지연, 합의완료일 적기율 ----
+  const sp = srPolicy(board)
+  const sr = (() => {
+    if (!sp) return null
+    const top = items.filter((i) => !i.parentId)
+    const delays = sp.delayCol ? top.map((i) => Number(i.values?.[sp.delayCol])).filter((v) => Number.isFinite(v)) : []
+    const avgDelay = delays.length ? delays.reduce((a, v) => a + v, 0) / delays.length : null
+    const late = delays.filter((v) => v >= 24).length
+    const rate = (col) => {
+      if (!sp.completedAtCol || !col) return null
+      const rows = top.filter((i) => i.values?.[sp.completedAtCol] && (i.values?.[col] || i.values?.[sp.agreedCol]))
+      if (!rows.length) return null
+      const ok = rows.filter((i) => i.values[sp.completedAtCol].slice(0, 10) <= (i.values[col] || i.values[sp.agreedCol]).slice(0, 10)).length
+      return { pct: Math.floor((ok / rows.length) * 100), ok, n: rows.length }
+    }
+    return { avgDelay, late, n: delays.length, first: rate(sp.firstAgreedCol || sp.agreedCol), approved: rate(sp.agreedCol) }
+  })()
+
   // 담당자별 업무량 (상태별 누적)
   const byPerson = new Map()
   for (const i of items) {
@@ -58,12 +76,20 @@ export default function BoardDashboard({ board, items, statusById, ops, dutyInde
       <div className="kpi-row">
         <KpiCard tone="primary" icon="list" label={`전체 ${noun}`} value={total} />
         <KpiCard tone="success" icon="check" label="완료율" value={`${pct}%`} sub={`${done} / ${total} 완료`} />
-        <KpiCard tone="info" icon="timeline" label="진행 중" value={total - done} />
+        <KpiCard tone="info" icon="timeline" label="미완료" value={total - done} />
         <KpiCard tone="danger" icon="calendar" label="마감 지남" value={overdue.length} sub={overdue.length ? '확인 필요' : '지연 없음'} />
       </div>
+      {sr && (
+        <div className="kpi-row">
+          <KpiCard tone="info" icon="clock" label="평균 등록 지연" value={sr.avgDelay == null ? '-' : `${sr.avgDelay.toFixed(1)}시간`} sub={sr.n ? `접수일시 입력 ${sr.n}건 기준` : '접수일시 입력 없음'} />
+          <KpiCard tone={sr.late ? 'danger' : 'success'} icon="alert" label="24시간 이상 늦게 등록" value={sr.late} sub="등록 시각 − 접수일시" />
+          <KpiCard tone="primary" icon="target" label="적기율 (최초 합의일)" value={sr.first ? `${sr.first.pct}%` : '-'} sub={sr.first ? `완료 ${sr.first.n}건 중 ${sr.first.ok}건` : '완료 데이터 없음'} />
+          <KpiCard tone="success" icon="check" label="적기율 (변경 승인 합의일)" value={sr.approved ? `${sr.approved.pct}%` : '-'} sub={sr.approved ? `완료 ${sr.approved.n}건 중 ${sr.approved.ok}건` : '완료 데이터 없음'} />
+        </div>
+      )}
       {hasSla && (
         <div className="kpi-row">
-          <KpiCard tone={slaBreach.length ? 'danger' : 'success'} icon="alert" label="SLA 초과 (진행 중)" value={slaBreach.length} sub={slaWarn.length ? `4시간 내 마감 ${slaWarn.length}건` : '임박 없음'} />
+          <KpiCard tone={slaBreach.length ? 'danger' : 'success'} icon="alert" label="SLA 초과 (미완료)" value={slaBreach.length} sub={slaWarn.length ? `4시간 내 마감 ${slaWarn.length}건` : '임박 없음'} />
           <KpiCard tone="primary" icon="target" label="SLA 준수율" value={slaRate == null ? '-' : `${slaRate}%`} sub={slaDone.length ? `처리 완료 ${slaDone.length}건 중 ${slaMet}건` : '완료 데이터 없음'} />
           <KpiCard tone="info" icon="clock" label="평균 응답 시간" value={avgRespondH == null ? '-' : fmtRemain(avgRespondH * 3600000)} sub={responded.length ? `${responded.length}건 기준` : '응답 기록 없음'} />
           <KpiCard tone="success" icon="check" label="평균 처리 시간" value={avgResolveH == null ? '-' : fmtRemain(avgResolveH * 3600000)} sub={resolved.length ? `${resolved.length}건 기준` : '처리 기록 없음'} />

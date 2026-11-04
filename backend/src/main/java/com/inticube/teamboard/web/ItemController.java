@@ -42,7 +42,7 @@ public class ItemController {
     }
 
     @PostMapping("/items/bulk-delete")
-    public BulkResult bulkDelete(@RequestBody BulkRequest req) { checkAll(req); return itemService.deleteItems(req.ids()); }
+    public BulkResult bulkDelete(@RequestBody BulkRequest req) { checkAll(req); return itemService.deleteItems(req.ids(), req.reason()); }
 
     @PostMapping("/items/bulk-move")
     public BulkResult bulkMove(@RequestBody BulkRequest req, @AuthenticationPrincipal UserPrincipal me) {
@@ -57,7 +57,7 @@ public class ItemController {
     }
 
     @DeleteMapping("/items/{id}")
-    public void delete(@PathVariable Long id) { guard.getItemChecked(id); itemService.deleteItem(id); }
+    public void delete(@PathVariable Long id, @RequestParam(required = false) String reason) { guard.getItemChecked(id); itemService.deleteItem(id, reason); }
 
     @PostMapping("/items/{id}/updates")
     public UpdateDto addUpdate(@PathVariable Long id, @Valid @RequestBody UpdateRequest req, @AuthenticationPrincipal UserPrincipal me) {
@@ -72,6 +72,13 @@ public class ItemController {
         return itemService.updateUpdate(id, req.content(), me);
     }
 
+    /** 댓글 수정 이력 (작성자·관리자) */
+    @GetMapping("/updates/{id}/revisions")
+    public java.util.List<java.util.Map<String, Object>> updateRevs(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) {
+        guard.getUpdateChecked(id);
+        return itemService.getUpdateRevs(id, me);
+    }
+
     @DeleteMapping("/updates/{id}")
     public void deleteUpdate(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) { guard.getUpdateChecked(id); itemService.deleteUpdate(id, me); }
 
@@ -82,9 +89,9 @@ public class ItemController {
     }
 
     @GetMapping("/attachments/{id}/download")
-    public ResponseEntity<Resource> download(@PathVariable Long id) {
+    public ResponseEntity<Resource> download(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal me) {
         guard.getAttachmentChecked(id);
-        ItemService.Download d = itemService.getDownload(id);
+        ItemService.Download d = itemService.getDownload(id, me);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(d.name(), StandardCharsets.UTF_8).build().toString())
                 .header("X-Content-Type-Options", "nosniff")

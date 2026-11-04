@@ -3,14 +3,14 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../api.js'
 import { useApp } from '../App.jsx'
-import { Avatar, Spinner, useToast, useConfirm, Popover, usePopover } from './common.jsx'
+import { Avatar, Spinner, useToast, useConfirm, Popover, usePopover, Modal } from './common.jsx'
 import { StatusChip, AssigneeChip, PriorityChip, DateChip, DutyChip, TypeChip, VersionChip, SlaBadge, ProgressCell, HoursCell, RecurChip } from './cells.jsx'
 import { itemKey, fmtHours, linkLabel, LINK_TYPES, slaOf } from '../sla.js'
 import { buildDutyIndex } from '../dutyTree.js'
 import { Icon } from './icons.jsx'
 import { Markdown, MarkdownEditor, CommentEditBox } from './markdown.jsx'
 import { relTime, fmtSize, isOverdue, fmtDateTime } from '../util.js'
-import { FieldEditor, columnsFor, distinctValues, nameUser, rememberRefs, builtinLabel } from './Fields.jsx'
+import { FieldEditor, columnsFor, distinctValues, fieldOptions, srAutoCols, srPolicy, nameUser, rememberRefs, builtinLabel } from './Fields.jsx'
 
 /** 업무 상세 패널 (오른쪽 슬라이드) */
 export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) {
@@ -22,6 +22,8 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
   const [error, setError] = useState(null)
   const [name, setName] = useState('')
   const [editingDesc, setEditingDesc] = useState(false)
+  const descBase = useRef('')  // 편집을 시작할 때의 설명 (저장 시 그 사이 다른 사람이 바꿨는지 확인)
+  const startDesc = () => { descBase.current = detail?.description || ''; setDesc(detail?.description || ''); setEditingDesc(true) }
   const [desc, setDesc] = useState('')
   const titleRef = useRef(null)
 
@@ -55,7 +57,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
   }
   const saveDesc = async () => {
     try {
-      await api.patch(`/api/items/${itemId}`, { description: desc })
+      await api.patch(`/api/items/${itemId}`, { description: desc, base: { description: descBase.current } })
       await reload(); setEditingDesc(false)
     } catch (e) { toast(e.message, 'error') }
   }
@@ -64,6 +66,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
   const parent = item?.parentId ? board.items.find((i) => i.id === item.parentId) : null
   const subs = item && !item.parentId ? board.items.filter((i) => i.parentId === item.id).sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id) : []
   const fieldCols = item ? columnsFor(board, item.parentId ? 'SUBITEM' : 'ITEM') : []
+  const autoCols = srAutoCols(board)
   const values = { ...(boardItem?.values || {}), ...(detail?.values || {}) }
   const sorted = detail ? [...detail.updates].sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : []
   const replies = {}
@@ -71,6 +74,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
   const activity = sorted.filter((u) => !u.parentId || !sorted.some((x) => x.id === u.parentId))
   const [replyTo, setReplyTo] = useState(null)
   const [editingId, setEditingId] = useState(null)
+  const [revsOf, setRevsOf] = useState(null)
   const saveField = async (col, v) => {
     try {
       await ops.updateItem(itemId, { values: { [col.id]: v } })
@@ -83,13 +87,14 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
       <div className="act-comment-head">
         <Avatar user={authorOf(u)} size={22} /><b>{authorOf(u).name}</b>
         <span className="act-time" title={fmtDateTime(u.createdAt)}>{fmtDateTime(u.createdAt)}</span>
-        {u.updatedAt && <span className="edited-mark" title={`수정: ${fmtDateTime(u.updatedAt)}`}>(수정됨)</span>}
+        {u.updatedAt && !u.deleted && <span className="edited-mark" title={`수정: ${fmtDateTime(u.updatedAt)} · 이전 내용은 보존됩니다`}>(수정됨)</span>}
+        {u.updatedAt && !u.deleted && (u.author?.id === me.id || me.role === 'ADMIN') && <button className="link small" onClick={() => setRevsOf(u.id)}>이력</button>}
         <span style={{ marginLeft: 'auto' }} />
-        {!isReply && <button className="link small" onClick={() => setReplyTo(replyTo === u.id ? null : u.id)}>답글</button>}
-        {u.author?.id === me.id && editingId !== u.id && <button className="link small" onClick={() => setEditingId(u.id)}>수정</button>}
-        {(u.author?.id === me.id || me.role === 'ADMIN') && (
+        {!isReply && !u.deleted && <button className="link small" onClick={() => setReplyTo(replyTo === u.id ? null : u.id)}>답글</button>}
+        {!u.deleted && u.author?.id === me.id && editingId !== u.id && <button className="link small" onClick={() => setEditingId(u.id)}>수정</button>}
+        {!u.deleted && (u.author?.id === me.id || me.role === 'ADMIN') && (
           <button className="icon-btn icon-btn-sm" aria-label="댓글 삭제" onClick={async () => {
-            if (!(await confirm(isReply ? '이 답글을 삭제할까요?' : '이 댓글을 삭제할까요? 답글도 함께 삭제됩니다.', { okText: '삭제' }))) return
+            if (!(await confirm(isReply ? '이 답글을 삭제할까요?' : '이 댓글을 삭제할까요? 화면에는 \'삭제된 댓글\'로 표시되고, 답글과 삭제 기록은 남습니다.', { okText: '삭제' }))) return
             try { await api.del(`/api/updates/${u.id}`); await onPosted() } catch (e) { toast(e.message, 'error') }
           }}><Icon name="trash" size={13} /></button>
         )}
@@ -99,6 +104,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
             onSave={async (text) => {
               try { await api.put(`/api/updates/${u.id}`, { content: text }); setEditingId(null); await onPosted() } catch (e) { toast(e.message, 'error') }
             }} />
+        : u.deleted ? <div className="act-body act-deleted">삭제된 댓글입니다.{u.deletedAt ? ` (${fmtDateTime(u.deletedAt)})` : ''}</div>
         : <Markdown text={u.content} mentionNames={mentionNames} className="act-body" />}
       {!isReply && (replies[u.id] || []).map((r) => comment(r, true))}
       {!isReply && replyTo === u.id && (
@@ -161,7 +167,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                       {fieldCols.map((c) => (
                         <Prop key={c.id} label={c.name}>
                           <FieldEditor col={c} itemId={itemId} value={values[c.id] || ''} users={users} targetName={board.refBoards?.[c.refBoardId]}
-                            options={c.type === 'DROPDOWN' || c.type === 'PEOPLE' ? distinctValues(board.items, c) : []}
+                            options={fieldOptions(board, c)} auto={autoCols.has(c.id)}
                             onSave={(v) => saveField(c, v)} />
                         </Prop>
                       ))}
@@ -205,7 +211,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                 <section className="dsec">
                   <div className="dsec-head">
                     <h4>설명</h4>
-                    {!editingDesc && <button className="link" onClick={() => setEditingDesc(true)}>{detail.description ? '편집' : '추가'}</button>}
+                    {!editingDesc && <button className="link" onClick={() => startDesc()}>{detail.description ? '편집' : '추가'}</button>}
                   </div>
                   {editingDesc ? (
                     <>
@@ -218,8 +224,8 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
                       </div>
                     </>
                   ) : detail.description
-                    ? <div className="desc-view" onDoubleClick={() => setEditingDesc(true)}><Markdown text={detail.description} mentionNames={mentionNames} /></div>
-                    : <button className="desc-empty" onClick={() => setEditingDesc(true)}>설명을 추가하세요…</button>}
+                    ? <div className="desc-view" onDoubleClick={() => startDesc()}><Markdown text={detail.description} mentionNames={mentionNames} /></div>
+                    : <button className="desc-empty" onClick={() => startDesc()}>설명을 추가하세요…</button>}
                 </section>
 
                 <Files itemId={itemId} me={me} files={detail.attachments} toast={toast} confirm={confirm}
@@ -241,6 +247,7 @@ export default function ItemDrawer({ itemId, board, statusById, ops, onClose }) 
             </>
           )}
         {confirmDialog}
+        {revsOf && <RevisionsModal updateId={revsOf} onClose={() => setRevsOf(null)} />}
       </aside>
     </div>,
     document.body,
@@ -315,7 +322,7 @@ function TimeSection({ itemId, entries, me, toast, confirm, onChanged }) {
     try { await api.post(`/api/items/${itemId}/time`, { hours: Number(f.hours), workDate: f.workDate, comment: f.comment }); setF({ ...f, hours: '', comment: '' }); setOpen(false); await onChanged() } catch (err) { toast(err.message, 'error') }
   }
   const remove = async (t) => {
-    if (!(await confirm('이 시간 기록을 삭제할까요?', { okText: '삭제' }))) return
+    if (!(await confirm('이 시간 기록을 삭제할까요?\n합계에서만 빠지고 삭제 기록은 남습니다.', { okText: '삭제' }))) return
     try { await api.del(`/api/time/${t.id}`); await onChanged() } catch (err) { toast(err.message, 'error') }
   }
   return (
@@ -324,7 +331,7 @@ function TimeSection({ itemId, entries, me, toast, confirm, onChanged }) {
       {open && (
         <form className="time-form" onSubmit={submit}>
           <input className="input input-sm" style={{ width: '5rem' }} inputMode="decimal" placeholder="시간" value={f.hours} autoFocus required onChange={(e) => setF({ ...f, hours: e.target.value })} />
-          <input type="date" className="input input-sm" style={{ width: '9.5rem' }} value={f.workDate} onChange={(e) => setF({ ...f, workDate: e.target.value })} />
+          <input type="date" className="input input-sm" style={{ width: '9.5rem' }} value={f.workDate} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setF({ ...f, workDate: e.target.value })} />
           <input className="input input-sm grow" placeholder="한 일 (선택)" maxLength={500} value={f.comment} onChange={(e) => setF({ ...f, comment: e.target.value })} />
           <button className="btn btn-sm btn-primary" disabled={!(Number(f.hours) > 0)}>저장</button>
           <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>취소</button>
@@ -444,7 +451,10 @@ function Files({ itemId, me, files, onChanged, toast, confirm }) {
     setBusy(true)
     for (const f of list) {
       if (f.size > 50 * 1024 * 1024) { toast(`${f.name}: 50MB 를 초과합니다.`, 'error'); continue }
-      try { await api.upload(`/api/items/${itemId}/attachments`, f) } catch (e) { toast(`${f.name}: ${e.message}`, 'error') }
+      try {
+        const r = await api.upload(`/api/items/${itemId}/attachments`, f)
+        if (r?.warning) toast(`${f.name}: ${r.warning}`, 'warning')
+      } catch (e) { toast(`${f.name}: ${e.message}`, 'error') }
     }
     setBusy(false)
     if (inputRef.current) inputRef.current.value = ''
@@ -461,10 +471,31 @@ function Files({ itemId, me, files, onChanged, toast, confirm }) {
       </div>
       {files.length === 0 ? <div className="drop-hint">파일을 여기로 끌어다 놓으세요 (최대 50MB)</div> : (
         <FileList files={files} me={me} downloadBase="/api/attachments" onDelete={async (f) => {
-          if (!(await confirm(`'${f.originalName}' 파일을 삭제할까요?`, { okText: '삭제' }))) return
+          if (!(await confirm(`'${f.originalName}' 파일을 삭제할까요?\n목록에서만 빠지고 삭제 기록은 남습니다.`, { okText: '삭제' }))) return
           try { await api.del(`/api/attachments/${f.id}`); await onChanged() } catch (e) { toast(e.message, 'error') }
         }} />
       )}
     </section>
+  )
+}
+
+/** 댓글 수정 이력: 수정 전 내용을 시간순으로 */
+function RevisionsModal({ updateId, onClose }) {
+  const [rows, setRows] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => { api.get(`/api/updates/${updateId}/revisions`).then(setRows).catch((e) => setErr(e.message)) }, [updateId])
+  return (
+    <Modal title="댓글 수정 이력" onClose={onClose} width={560}>
+      {err ? <div className="form-error">{err}</div> : !rows ? <Spinner /> : rows.length === 0 ? <p className="muted">보존된 이전 내용이 없습니다.</p> : (
+        <ol className="rev-list">
+          {rows.map((r, n) => (
+            <li key={r.id}>
+              <div className="small muted">{n + 1}번째 수정 전 내용 · {fmtDateTime(r.edited_at)} · {r.edited_by_name || '-'}</div>
+              <pre className="rev-body">{r.content}</pre>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Modal>
   )
 }

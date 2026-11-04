@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Avatar, Popover, StatusPicker, UserPicker, PriorityPicker, DutyPicker, usePopover } from './common.jsx'
 import { StatusIcon, PriorityIcon, Icon } from './icons.jsx'
 import { priorityOf, friendlyDate, todayStr, fmtDate, parseDate, addDays, weekday, sc } from '../util.js'
-import { slaOf, fmtHours, recurLabel, RECUR_OPTIONS } from '../sla.js'
+import { slaOf, fmtHours, recurLabel, recurBase, RECUR_OPTIONS } from '../sla.js'
 
 /** 상태: 아이콘만(variant=icon) 또는 아이콘+라벨 칩 */
 export function StatusChip({ item, statusById, statuses, onChange, variant = 'chip' }) {
@@ -271,7 +271,7 @@ export function RecurChip({ item, onChange }) {
       {pop.anchor && (
         <Popover anchor={pop.anchor} onClose={pop.close} width={200}>
           <div className="menu">
-            {RECUR_OPTIONS.map(([k, l]) => <button key={k} className={`menu-row ${(item.recurRule || '') === k ? 'active' : ''}`} onClick={() => { pop.close(); onChange({ recurRule: k || null }) }}>{l}</button>)}
+            {RECUR_OPTIONS.map(([k, l]) => <button key={k} className={`menu-row ${recurBase(item.recurRule) === k ? 'active' : ''}`} onClick={() => { pop.close(); onChange({ recurRule: k || null }) }}>{l}</button>)}
             <div className="menu-empty" style={{ padding: '6px 10px 2px' }}>완료 처리하면 다음 회차가 자동으로 만들어집니다.</div>
           </div>
         </Popover>

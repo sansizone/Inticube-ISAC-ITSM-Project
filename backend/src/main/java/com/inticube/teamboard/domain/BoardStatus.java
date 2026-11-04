@@ -3,7 +3,7 @@ package com.inticube.teamboard.domain;
 import lombok.Getter;
 import lombok.Setter;
 
-/** 보드별 상태 라벨 (예: 대기/진행중/막힘/완료) */
+/** 보드별 상태 라벨 (예: 대기/처리중/막힘/완료) */
 @Getter @Setter
 public class BoardStatus {
     private Long id;
